@@ -1,0 +1,35 @@
+# Build outputs
+/build/
+/out/
+/bin/
+/obj/
+/.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.VC.opendb
+
+# Dependencies fetched at build time
+/extern/
+/packages/
+/vcpkg_installed/
+
+# Local artifacts and captures
+/artifacts/
+/captures/
+/logs/
+*.log
+
+# Secrets and local auth
+/.env
+/.secrets/
+*deploy*
+*token*
+hosts.yml
+gh-config/
+
+# Windows/editor noise
+Thumbs.db
+Desktop.ini
+__pycache__/
+*.pyc

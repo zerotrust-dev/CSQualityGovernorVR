@@ -1,0 +1,90 @@
+# Measurement Method
+
+Carried over from `custom_OpenXR_Toolkit/docs/MEASUREMENT_TRAPS.md`. Most of
+2026-07-31 was lost to bad measurement rather than bad ideas, and several
+confident conclusions had to be reversed. These traps will recur.
+
+## The Rules
+
+**1. Never read numbers with the CS menu open.**
+The overlay renders every frame while open and costs roughly 1.5–2 ms. Menu
+open, a configuration read 15.12 ms / 66 fps; menu closed, the same
+configuration ran 72–73 fps steady with 15% headroom and no stutter.
+
+*This is the single strongest argument for the Phase 1 cycler plugin* — it lets
+transitions be observed and logged without the observer changing the result.
+
+**2. The GPU field in CS Performance Tuning is broken.**
+It read `9.72 ms` at `0.50x`, `0.77x` and `0.85x` — three configurations
+differing by nearly 3× in rendered pixels. It does not measure GPU work. `Game`,
+`CPU` and `FPS` in the same header respond correctly; only GPU is suspect.
+
+A whole "you are CPU-bound, foveation cannot help" conclusion was built on that
+number and was wrong.
+
+**3. Point samples are anecdotes.**
+Header values jitter — `CPU` was observed at 3.03 and 8.21 ms in otherwise
+identical conditions. Use Avg / P95 / P99 over a window, or sustained in-game
+observation. Never compare two single readings.
+
+**4. Measure the worst scene, not the convenient one.**
+Every ladder so far was captured on a quiet hillside. A locked framerate is
+bound by its worst moment — a busy town, heavy combat, rain. Tuning to a calm
+scene guarantees re-tuning later.
+
+Also note SSGI is configured interiors-only in MGO4, so outdoor profiling
+systematically understates GPU load. **The bottleneck is a property of the
+scene, not of the configuration.**
+
+**5. Perceptual A/B across a restart is unreliable.**
+Repeatedly, "I can't tell if anything changed" was the outcome. Two things fix
+it:
+
+- **A visualiser** — CS's FOV Mask Visualization shows the mask directly.
+- **A position, not a quality** — "where does the edge sit" survives a restart;
+  "does it look slightly better" does not.
+
+Where neither is available, capture the mirror window and compare afterwards
+rather than trusting memory.
+
+**6. One owner per lever.**
+At one point three systems were pacing frames simultaneously — PrimaShock turbo
+and throttle, CS/Reflex FPS limit at 70, and the 72 Hz compositor. A 70 fps cap
+against a 72 Hz display cannot hit every vsync, and it presented as turning
+stutter.
+
+The same rule ended the PrimaShock-VRS-versus-CS-foveation question, and it
+applies to the governor: it must be the **only** thing changing the upscale
+preset while it is running.
+
+## Phase 1 Logging Contract
+
+The cycler should record per transition, without opening any menu:
+
+```
+QPC timestamp at request
+requested preset        (public enum value + name)
+GetUpscalePreset()      readback, immediately and after settle
+GetVRUpscalingApplyBlockReasons()   at request time
+frametime samples       for N seconds either side of the change
+time to settle          request -> frametime stable within band
+```
+
+That yields latency and acceptance behaviour objectively, leaving only "how
+does it look" to human judgement — which is the one thing human judgement is
+actually good at.
+
+## What Good Evidence Looked Like
+
+Two results from 2026-07-31 that were trustworthy, and why:
+
+**The foveation ladder.** Five settings, measured menu-closed, monotonic in the
+predicted direction. Noise does not produce a clean ordering across five points.
+
+**The Pimax foveation levels.** Off / Quality / Performance gave headroom floors
+of 4 / 5 / 7 with spreads of 4 / 2 / 1. Again monotonic across three settings,
+and the mechanism (peripheral cost is the variable part of the frame) explained
+the shape.
+
+**Monotonic ordering across three or more settings is the cheapest form of
+validation available.** Prefer it to any single A/B.
