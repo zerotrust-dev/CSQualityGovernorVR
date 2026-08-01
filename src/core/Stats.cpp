@@ -96,6 +96,10 @@ std::vector<double> FrameWindow::Samples() const
 	return { _samples.begin(), _samples.end() };
 }
 
+SettleDetector::SettleDetector() noexcept :
+	SettleDetector(Config{})
+{}
+
 SettleDetector::SettleDetector(Config a_config) noexcept :
 	_config(a_config)
 {

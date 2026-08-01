@@ -70,7 +70,11 @@ public:
 		std::size_t warmupSamples = 5;
 	};
 
-	explicit SettleDetector(Config a_config = {}) noexcept;
+	// Two constructors rather than a defaulted argument: GCC rejects
+	// `Config a_config = {}` while the enclosing class is still incomplete,
+	// though MSVC accepts it.
+	SettleDetector() noexcept;
+	explicit SettleDetector(Config a_config) noexcept;
 
 	void Reset() noexcept;
 
