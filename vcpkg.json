@@ -1,0 +1,11 @@
+{
+  "name": "csqualitygovernorvr",
+  "version-string": "0.1.0",
+  "description": "SKSE plugin: adapts Community Shaders upscaling quality to the scene",
+  "dependencies": [
+    {
+      "name": "commonlibsse-ng",
+      "features": ["vr"]
+    }
+  ]
+}

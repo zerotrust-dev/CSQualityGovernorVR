@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # The core is deliberately free of SKSE, Skyrim SDK and Windows dependencies,
+  # so this job is fast, deterministic, and runs everywhere.
+  core-tests:
+    name: Core unit tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DCSGOV_BUILD_TESTS=ON -DCSGOV_BUILD_PLUGIN=OFF
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+  # The plugin needs CommonLibSSE-NG. It is expected to need iteration before
+  # it first builds green; the core tests above are the gate that matters for
+  # logic changes.
+  plugin:
+    name: Build SKSE plugin
+    runs-on: windows-latest
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: '5d2a0a9814db499f6ba2e847ca7ab5912badcdbf'
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build-plugin -A x64 `
+            -DCSGOV_BUILD_TESTS=OFF -DCSGOV_BUILD_PLUGIN=ON `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build-plugin --config Release --parallel
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $out = "artifacts/CSQualityGovernorVR"
+          New-Item -ItemType Directory -Force -Path "$out/SKSE/Plugins" | Out-Null
+          Copy-Item -Path "build-plugin/src/plugin/Release/CSQualityGovernorVR.dll" `
+                    -Destination "$out/SKSE/Plugins/" -ErrorAction SilentlyContinue
+          Copy-Item -Path "config/CSQualityGovernorVR.ini" `
+                    -Destination "$out/SKSE/Plugins/" -ErrorAction SilentlyContinue
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: CSQualityGovernorVR-plugin
+          path: artifacts/CSQualityGovernorVR/
+          if-no-files-found: warn
