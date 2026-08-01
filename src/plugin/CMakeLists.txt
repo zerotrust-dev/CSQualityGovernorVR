@@ -1,18 +1,29 @@
-# SKSE plugin target. Requires CommonLibSSE-NG, supplied through vcpkg.
+# SKSE plugin target.
 #
-# This half cannot be validated locally - there is no dev kit on the machine -
-# so expect CI iteration here. The core library and its tests are independent
-# of everything below.
+# Pattern copied from the sibling HeadDirectedTurning / TiptoeToJumpVR repos,
+# which already build green in CI. Do not "improve" it without checking those
+# first - the package name (commonlibsse-ng-vr, not commonlibsse-ng) and the
+# COMPATIBILITY VR flag are both load-bearing.
 
 find_package(CommonLibSSE CONFIG REQUIRED)
 
-add_commonlibsse_plugin(CSQualityGovernorVR
-    SOURCES
+add_commonlibsse_plugin(
+    CSQualityGovernorVR
+    AUTHOR "zerotrust-dev"
+    NAME "CS Quality Governor VR"
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY VR
+)
+
+target_sources(
+    CSQualityGovernorVR
+    PRIVATE
         main.cpp
         Config.cpp
+        Config.h
         Reporter.cpp
-    AUTHOR "zerotrust-dev"
-    NAME "CSQualityGovernorVR"
+        Reporter.h
+        PCH.h
 )
 
 target_include_directories(CSQualityGovernorVR PRIVATE
@@ -21,8 +32,8 @@ target_include_directories(CSQualityGovernorVR PRIVATE
 )
 
 target_link_libraries(CSQualityGovernorVR PRIVATE csgov_core)
-target_compile_features(CSQualityGovernorVR PRIVATE cxx_std_20)
+target_precompile_headers(CSQualityGovernorVR PRIVATE PCH.h)
 
-target_precompile_headers(CSQualityGovernorVR PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/PCH.h
-)
+if(MSVC)
+    target_compile_options(CSQualityGovernorVR PRIVATE /W4 /permissive- /EHsc)
+endif()

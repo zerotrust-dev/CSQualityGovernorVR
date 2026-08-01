@@ -1,11 +1,8 @@
 {
-  "name": "csqualitygovernorvr",
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "cs-quality-governor-vr",
   "version-string": "0.1.0",
-  "description": "SKSE plugin: adapts Community Shaders upscaling quality to the scene",
   "dependencies": [
-    {
-      "name": "commonlibsse-ng",
-      "features": ["vr"]
-    }
+    "commonlibsse-ng-vr"
   ]
 }

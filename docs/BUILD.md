@@ -1,18 +1,17 @@
 # Building
 
-There is no local dev kit on the target machine — all compilation happens in
-GitHub CI.
+No local dev kit on the target machine — all compilation happens in GitHub CI.
 
 ## Two independent halves
 
-| Target | Needs | CI status |
+| Target | Needs | CI job |
 |---|---|---|
-| `csgov_core` + tests | CMake and a C++20 compiler. Nothing else. | **gating** |
-| `CSQualityGovernorVR.dll` | CommonLibSSE-NG via vcpkg | `continue-on-error` |
+| `csgov_core` + tests | CMake and a C++20 compiler. Nothing else. | `core-tests`, Linux + Windows |
+| `CSQualityGovernorVR.dll` | CommonLibSSE-NG VR via vcpkg | `plugin`, Windows |
 
 The core is deliberately free of SKSE, the Skyrim SDK and Windows, which is why
-its tests build and run on both Linux and Windows in about a minute. **That is
-the job to trust when changing logic.**
+its tests build and run on both platforms in about a minute. **That is the job
+to trust when changing logic.**
 
 ```bash
 cmake -S . -B build -DCSGOV_BUILD_TESTS=ON -DCSGOV_BUILD_PLUGIN=OFF
@@ -20,30 +19,28 @@ cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-## Known issue: the plugin job does not build yet
+## Plugin dependencies
 
-```
-error: while loading commonlibsse-ng:
-error: commonlibsse-ng does not exist
-vcpkg install failed
-```
+The package is **`commonlibsse-ng-vr`**, not `commonlibsse-ng`, and it is not in
+the mainline vcpkg registry — it comes from the colorglass registry declared in
+`vcpkg-configuration.json`.
 
-`commonlibsse-ng` is **not in the mainline vcpkg registry**. It is published
-through a custom registry, so `vcpkg.json` alone is not enough — the project
-needs a `vcpkg-configuration.json` declaring that registry and a pinned
-baseline.
+The first CI attempt failed with `commonlibsse-ng does not exist` because of
+exactly that. The fix was not guesswork: the sibling `HeadDirectedTurning`,
+`TiptoeToJumpVR` and `TreadmillLocomotionVR` repos already build green, and this
+project now copies their configuration verbatim —
 
-This is unresolved deliberately rather than guessed at: naming the wrong
-registry produces a more confusing failure than naming none, and each attempt
-costs a CI round trip. Resolve it by taking the registry and baseline from a
-known-good CommonLibSSE-NG project template rather than from memory.
+- the same colorglass registry and pinned baselines,
+- the same `find_package(CommonLibSSE CONFIG REQUIRED)` and
+  `add_commonlibsse_plugin(... COMPATIBILITY VR)`,
+- the same manual pinned-vcpkg bootstrap in CI rather than a marketplace action.
 
-Until then the plugin job is `continue-on-error`, so it reports the problem
-without failing the run.
+**When any of that needs changing, check those repos first.** The vcpkg commit
+pinned in the workflow must match the baseline in `vcpkg-configuration.json`.
 
 ## Portability note
 
-The core is compiled by both MSVC and GCC on purpose. MSVC already accepted a
-construct GCC rejected — a defaulted `Config a_config = {}` argument on a
-constructor whose parameter type is nested in the same incomplete class. Two
-compilers catch more than one, and the tests are cheap.
+The core compiles under both MSVC and GCC on purpose. MSVC accepted a construct
+GCC rejected — a defaulted `Config a_config = {}` argument whose type is nested
+in the same still-incomplete class. Two compilers catch more than one, and the
+job costs a minute.
