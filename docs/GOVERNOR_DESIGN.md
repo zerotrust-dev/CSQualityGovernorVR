@@ -341,8 +341,9 @@ API probe confirms revision 3 (E-6).
 
 ### Phase 1 — Cost-curve capture
 
-**Procedure.** Run the cycler (3 sweeps, serpentine) in three scene classes,
-standing still with a roughly fixed view:
+**Procedure.** Run the cycler (**4 sweeps**, serpentine — the count must be even,
+see the decision log) in three scene classes, standing still with a roughly fixed
+view:
 
 - **Light** — interior, few actors. Already captured 2026-08-03.
 - **Medium** — town exterior, moderate actor count.
@@ -446,6 +447,17 @@ available (E-6).
 ---
 
 ## Decision Log
+
+**2026-08-03 — Sweep count must be even.**
+Serpentine traversal was added so that reversing alternate sweeps cancels
+session drift. It only does so when both directions are equally represented.
+With `n` presets, a preset at ladder position `i` is visited at global time
+`s·n + j`, where `j = i` on even sweeps and `n−1−i` on odd. Over four sweeps the
+positions sum to `54`, independent of `i`; over three they sum to `27 + i`, which
+still depends on where the preset sits in the ladder. The default of 3 therefore
+left a residual bias proportional to ladder position — exactly the artefact
+serpentine exists to remove. Default is now 4, and `DwellSeconds` drops 12 → 8
+to keep the run under five minutes (575 frames at 72 Hz is ample for a P95).
 
 **2026-08-03 — Replaced the threshold policy with the cost model.**
 The 2026-08-01 design mapped P95 frametime onto presets through fixed step-up

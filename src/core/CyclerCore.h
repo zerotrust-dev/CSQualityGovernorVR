@@ -87,7 +87,12 @@ struct CyclerConfig
 	// Give up on a preset entirely if it stays blocked this long.
 	double blockGiveUpSeconds = 30.0;
 
-	int sweeps = 3;
+	// Must be EVEN for serpentine traversal to cancel drift. A preset at ladder
+	// position i is visited at global time s*n + (s even ? i : n-1-i); summing
+	// over an even number of sweeps gives a total independent of i, over an odd
+	// number it does not. Three sweeps leaves a residual bias proportional to
+	// ladder position - precisely the artefact serpentine exists to remove.
+	int sweeps = 4;
 	double frameBudgetMs = 1000.0 / 72.0;
 
 	// Reverse the ladder on odd sweeps so session drift cancels instead of
