@@ -66,7 +66,7 @@ heavy combat, rain. **The scene you choose is the result you get.**
 ## Output
 
 ```
-Data/SKSE/Plugins/CSQualityGovernorVR/Captures/
+Documents\My Games\Skyrim VR\SKSE\CSQualityGovernorVR\
     YYYYMMDD_HHMMSS_transitions.csv
     YYYYMMDD_HHMMSS_summary.txt
     YYYYMMDD_HHMMSS_frames.csv      (only if WritePerFrameCsv = 1)
