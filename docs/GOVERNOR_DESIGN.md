@@ -378,12 +378,25 @@ API probe confirms revision 3 (E-6).
 see the decision log) in three scene classes, standing still with a roughly fixed
 view:
 
-- **Light** — interior, few actors. Already captured 2026-08-03.
+- **Light** — small interior, few actors. Already captured 2026-08-03.
 - **Medium** — town exterior, moderate actor count.
-- **Heavy** — the worst reproducible scene available; dense exterior, combat or
-  high actor count.
+- **Heavy-CPU** — dense city; Markarth or Riften. Many objects, lights and
+  actors. Expect **high `t_fixed`, low `k`** — resolution barely helps. This is
+  the scene that exercises D-6, the ungovernable case.
+- **Heavy-GPU** — dense forest exterior with grass, canopy and volumetrics.
+  Expect **high `k`** — resolution helps a great deal. This is the main control
+  path.
 
-Use a named save per class so the run is repeatable.
+Splitting "heavy" this way is deliberate: total load is not the axis that
+matters to this controller, `k` is, and the two heavy scenes sit at opposite
+ends of it. A governor fitted against only one will be badly calibrated for the
+other. The four classes also subsume the simpler Light/Medium/Heavy framing, so
+this is four runs rather than two sets of three.
+
+Use a **named hard save per class** so the run is repeatable — Phase 2 predicts
+one sweep from another, which only means anything if the scene is genuinely the
+same. A save pins time of day, weather *and* actor positions; console commands
+do not pin the last of those.
 
 **Produces.** Per scene class: `t_fixed`, `t_scaled`, `k`, and the spread/drift
 columns now in `_summary.txt`.
