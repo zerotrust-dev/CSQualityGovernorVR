@@ -151,8 +151,17 @@ std::atomic_bool g_finished{ false };
 
 std::filesystem::path OutputDirectory()
 {
-	return std::filesystem::path{ "Data" } / "SKSE" / "Plugins" / "CSQualityGovernorVR" /
-	       "Captures";
+	// Next to the SKSE log, i.e. Documents/My Games/Skyrim VR/SKSE/.
+	//
+	// Deliberately NOT a relative "Data/..." path: under Mod Organizer's
+	// virtual filesystem those writes land in the Overwrite folder, which is
+	// easy to miss and easy to lose. The captures are the entire point of this
+	// plugin, so they go somewhere unambiguous and next to the log the user is
+	// already reading.
+	if (const auto dir = logger::log_directory()) {
+		return *dir / "CSQualityGovernorVR";
+	}
+	return std::filesystem::current_path() / "CSQualityGovernorVR";
 }
 
 void OnRecord(const TransitionRecord& a_record)
