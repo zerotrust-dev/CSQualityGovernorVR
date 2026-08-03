@@ -34,7 +34,8 @@ bool Reporter::OpenTransitions()
 		   "readback_ok,settled,settle_timed_out,"
 		   "steady_n,steady_mean_ms,steady_min_ms,steady_max_ms,steady_p50_ms,"
 		   "steady_p95_ms,steady_p99_ms,steady_stddev_ms,steady_miss_rate,"
-		   "whole_n,whole_mean_ms,whole_p95_ms,whole_max_ms\n";
+		   "steady_drop_rate,"
+		   "whole_n,whole_mean_ms,whole_p95_ms,whole_max_ms,whole_drop_rate\n";
 	return true;
 }
 
@@ -99,9 +100,10 @@ void Reporter::WriteTransition(const TransitionRecord& a_record)
 				 << a_record.steady.minMs << ',' << a_record.steady.maxMs << ','
 				 << a_record.steady.p50Ms << ',' << a_record.steady.p95Ms << ','
 				 << a_record.steady.p99Ms << ',' << a_record.steady.stdDevMs << ','
-				 << a_record.steady.missRate << ','
+				 << a_record.steady.missRate << ',' << a_record.steady.dropRate << ','
 				 << a_record.whole.samples << ',' << a_record.whole.meanMs << ','
-				 << a_record.whole.p95Ms << ',' << a_record.whole.maxMs << '\n';
+				 << a_record.whole.p95Ms << ',' << a_record.whole.maxMs << ','
+				 << a_record.whole.dropRate << '\n';
 	_transitions.flush();  // a crash mid-run must not cost the data already gathered
 }
 
@@ -134,6 +136,8 @@ void Reporter::Finish(const std::vector<TransitionRecord>& a_records, double a_b
 			double meanSum = 0.0;
 			double p95Sum = 0.0;
 			double missSum = 0.0;
+			double dropSum = 0.0;
+			double worstDrop = 0.0;
 			double settleSum = 0.0;
 			int settledCount = 0;
 			int timeoutCount = 0;
@@ -166,6 +170,8 @@ void Reporter::Finish(const std::vector<TransitionRecord>& a_records, double a_b
 			agg.meanSum += record.steady.meanMs;
 			agg.p95Sum += record.steady.p95Ms;
 			agg.missSum += record.steady.missRate;
+			agg.dropSum += record.steady.dropRate;
+			agg.worstDrop = std::max(agg.worstDrop, record.steady.dropRate);
 			agg.worstP95 = std::max(agg.worstP95, record.steady.p95Ms);
 			agg.minMean = std::min(agg.minMean, record.steady.meanMs);
 			agg.maxMean = std::max(agg.maxMean, record.steady.meanMs);
@@ -192,9 +198,10 @@ void Reporter::Finish(const std::vector<TransitionRecord>& a_records, double a_b
 		}
 
 		summary << "preset            scale  visits  mean_ms   spread    drift   p95_ms  "
-				   "worst_p95   miss%  settle_s  timeouts  rbfail  blocked\n";
+				   "worst_p95   miss%   drop%  worstdrop%  settle_s  timeouts  rbfail  "
+				   "blocked\n";
 		summary << "-------------------------------------------------------------------------"
-				   "-------------------------------------------------\n";
+				   "---------------------------------------------------------------------\n";
 		for (const auto& [publicValue, agg] : byPreset) {
 			const auto info = FindPresetByPublicValue(publicValue);
 			const double n = agg.visits > 0 ? static_cast<double>(agg.visits) : 1.0;
@@ -213,6 +220,8 @@ void Reporter::Finish(const std::vector<TransitionRecord>& a_records, double a_b
 					<< std::noshowpos << std::setw(9) << (agg.p95Sum / n) << std::setw(11)
 					<< agg.worstP95
 					<< std::setw(8) << std::setprecision(1) << (agg.missSum / n * 100.0)
+					<< std::setw(8) << (agg.dropSum / n * 100.0)
+					<< std::setw(12) << (agg.worstDrop * 100.0)
 					<< std::setw(10) << std::setprecision(3)
 					<< (agg.settledCount > 0 ? agg.settleSum / agg.settledCount : 0.0)
 					<< std::setw(10) << agg.timeoutCount << std::setw(8) << agg.readbackFail
@@ -222,7 +231,14 @@ void Reporter::Finish(const std::vector<TransitionRecord>& a_records, double a_b
 		summary << "\nNotes\n"
 				<< "  p95/worst_p95 matter more than mean: a locked framerate is lost at the\n"
 				<< "  tail, not on average.\n"
-				<< "  miss% is the share of frames exceeding the budget.\n"
+				<< "  drop% is the number that matters: frames that missed the interval\n"
+				<< "  outright (>1.5x budget) rather than merely exceeding it. This is what\n"
+				<< "  is felt as stutter when turning the head.\n"
+				<< "  miss% is NOT a stutter metric. Held at the refresh rate, frametime\n"
+				<< "  sits exactly ON the budget, so jitter puts ~half the frames just above\n"
+				<< "  it - the 2026-08-03 run read 33-44% miss in a scene that felt perfect.\n"
+				<< "  Read it as a margin gauge instead: ~0% means real headroom, ~30-50%\n"
+				<< "  means sitting on the cap, >80% means genuinely over budget.\n"
 				<< "  spread is max-min of the per-visit mean. If spread is comparable to the\n"
 				<< "  gap between two presets, those presets are not distinguishable in this\n"
 				<< "  scene and the ranking between them means nothing.\n"

@@ -141,3 +141,53 @@ TEST_CASE("reset clears settle state", "[stats][settle]")
 	CHECK_FALSE(detector.Settled());
 	CHECK(detector.SamplesSeen() == 0);
 }
+
+TEST_CASE("drop rate separates real misses from jitter at the cap", "[stats]")
+{
+	// The 2026-08-03 failure: at a locked 72 Hz the frametime sits ON the
+	// budget, so symmetric jitter puts about half the samples fractionally
+	// above it. Counting those as misses reported 33-44% stutter in a scene
+	// that felt perfect. dropRate must not be fooled the same way.
+	constexpr double budget = 1000.0 / 72.0;  // 13.889 ms
+
+	SECTION("jitter around the cap is not a drop")
+	{
+		std::vector<double> samples;
+		for (int i = 0; i < 100; ++i) {
+			samples.push_back(budget + (i % 2 == 0 ? 0.05 : -0.05));
+		}
+		const auto stats = ComputeStats(samples, budget);
+
+		// Half the samples are over budget...
+		REQUIRE(stats.missRate == Approx(0.5).margin(0.01));
+		// ...and none of them missed an interval.
+		REQUIRE(stats.dropRate == Approx(0.0));
+	}
+
+	SECTION("frames that took a second interval are drops")
+	{
+		std::vector<double> samples(90, budget);
+		samples.insert(samples.end(), 10, budget * 2.0);
+		const auto stats = ComputeStats(samples, budget);
+
+		REQUIRE(stats.dropRate == Approx(0.1));
+	}
+
+	SECTION("a scene genuinely over budget shows both")
+	{
+		const std::vector<double> samples(100, budget * 1.8);
+		const auto stats = ComputeStats(samples, budget);
+
+		REQUIRE(stats.missRate == Approx(1.0));
+		REQUIRE(stats.dropRate == Approx(1.0));
+	}
+
+	SECTION("no budget means neither is computed")
+	{
+		const std::vector<double> samples(10, 20.0);
+		const auto stats = ComputeStats(samples, 0.0);
+
+		REQUIRE(stats.missRate == Approx(0.0));
+		REQUIRE(stats.dropRate == Approx(0.0));
+	}
+}

@@ -33,7 +33,7 @@ Stated precisely, because "best quality" and "locked framerate" are in tension
 and a governor is exactly the thing that trades them:
 
 > **Maximise the time-weighted mean pixel fraction, subject to the frame-miss
-> rate staying below `miss_max` in every rolling `W_judge` window.**
+> **drop** rate staying below `drop_max` in every rolling `W_judge` window.**
 
 The constraint is primary. A governor that delivers higher average quality while
 letting a fight in Whiterun drop frames has failed, regardless of the average.
@@ -167,7 +167,7 @@ If no preset satisfies it, the scene cannot be governed into budget. Select the
 The controller behaves differently depending on whether the current measurement
 carries information. This asymmetry is forced by E-1, not chosen.
 
-**Uncapped** (`miss_rate > miss_floor`): the frametime is real. The cost model is
+**Uncapped** (not censored per D-7b): the frametime is real. The cost model is
 observable. Predict and **jump directly to the selected preset** — do not step
 one rung at a time. Four sequential one-rung steps at ~1 s settle each (E-2) is
 four seconds of stutter to escape a spike.
@@ -219,8 +219,40 @@ than a patch on top of it. **Do not re-add the special case.**
 
 ### D-7 — Decide on the tail, never the mean
 
-All decisions use **P95 frametime and miss rate** over a rolling window. A locked
-framerate is lost at the tail; a mean hides exactly the misses that matter.
+All decisions use **P95 frametime and drop rate** over a rolling window. A locked
+framerate is lost at the tail; a mean hides exactly the failures that matter.
+
+### D-7a — "Over budget" is not "dropped"
+
+A frame 0.01 ms over budget is not a stutter. Under vsync a frame either makes
+its interval (~13.9 ms at 72 Hz) or waits for the next one (~27.8 ms), so the
+honest detector sits **between** those two populations:
+
+```
+drop  ⟺  frametime > budget × 1.5
+```
+
+This matters because the naive definition is actively misleading in the regime
+we care about. When the compositor holds you at refresh, frametime sits *exactly
+on* budget, and symmetric jitter puts about half the samples fractionally above
+it. The 2026-08-03 run reported 33–44% "miss" for the four capped presets in a
+scene that was subjectively flawless — and the user's independent observation
+("stutter always tracked OpenXR Toolkit showing below 72; 72 always felt smooth")
+is the ground truth that the drop definition reproduces and the miss definition
+does not.
+
+`missRate` is retained, but only as a **margin gauge**: ~0% means real headroom,
+~30–50% means sitting on the cap, >80% means genuinely over budget.
+
+### D-7b — Detecting censoring
+
+A sample is censored (D-4) when the compositor is holding us, i.e.
+
+```
+censored  ⟺  p95 ≤ budget × (1 + cap_tol)   and   drop_rate ≈ 0
+```
+
+Do not test this with `missRate`; per D-7a it is ~50% in exactly this state.
 
 ### D-8 — Smoothness comes from the controller, not the actuator
 
@@ -261,8 +293,8 @@ every T_eval:
     if now - t_last_change < T_cooldown:
         return                        # let the transition settle (E-2)
 
-    p95, miss = window_stats(W_judge)
-    censored  = (miss <= miss_floor)
+    p95, drop = window_stats(W_judge)
+    censored  = (p95 <= budget * (1 + cap_tol)) and (drop <= drop_floor)   # D-7b
 
     # ---- update the model (D-5) ----
     if not censored:
@@ -274,7 +306,7 @@ every T_eval:
         remember (f(preset_cur), p95)
 
     # ---- decide ----
-    if miss > miss_max sustained for T_down:            # falling: informed
+    if drop > drop_max sustained for T_down:            # falling: informed
         target = highest preset with f <= (T/t_fixed - 1)/k     # D-3
         apply(target)                                    # jump, do not step
         probe_interval = T_up_min
@@ -286,7 +318,7 @@ every T_eval:
         pending_probe = target
         return
 
-    if pending_probe and probe failed (miss > miss_max within T_probe_judge):
+    if pending_probe and probe failed (drop > drop_max within T_probe_judge):
         apply(previous rung)
         probe_interval = min(probe_interval * 2, T_up_max)   # D-9
 ```
@@ -312,8 +344,9 @@ each — **none of them are to be tuned by feel in-game.**
 |---|---|---|---|
 | `budget` | frame budget | 13.89 ms (72 Hz) | headset refresh |
 | `margin` | safety margin below budget | 0.10 | Phase 3 sweep |
-| `miss_max` | miss rate that triggers a step down | 0.05 | Phase 3 |
-| `miss_floor` | miss rate below which a sample is censored | 0.01 | Phase 1 |
+| `drop_max` | drop rate that triggers a step down | 0.02 | Phase 3 |
+| `drop_floor` | drop rate below which running counts as clean | 0.005 | Phase 1 |
+| `cap_tol` | P95 within this fraction of budget means capped | 0.05 | Phase 1 |
 | `W_judge` | decision window | 2.0 s | Phase 3 |
 | `T_eval` | evaluation cadence | 0.5 s | — |
 | `T_cooldown` | minimum gap between changes | 3.0 s | E-2 (≥ 2× settle) |
@@ -447,6 +480,19 @@ available (E-6).
 ---
 
 ## Decision Log
+
+**2026-08-03 — "Over budget" replaced by "dropped" as the failure metric (D-7a,
+D-7b).**
+Prompted by the user's observation that stutter tracked OpenXR Toolkit reporting
+below 72 exactly, and that 72 always felt smooth. That is the correct ground
+truth, and our metric did not reproduce it: the 2026-08-03 run reported 33–44%
+"miss" for the four capped presets in a scene that felt flawless. Cause is
+mechanical — held at refresh, frametime sits *on* the budget, so symmetric jitter
+puts about half the samples fractionally above a strict `> budget` test. A frame
+either makes its interval or waits for the next, so the threshold belongs between
+the two populations at `1.5 × budget`. `missRate` is kept as a margin gauge only.
+`miss_max = 0.05` would have triggered a step-down continuously in a scene that
+needed none; replaced by `drop_max`, plus `cap_tol` for censoring detection.
 
 **2026-08-03 — Sweep count must be even.**
 Serpentine traversal was added so that reversing alternate sweeps cancels

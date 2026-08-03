@@ -61,6 +61,11 @@ FrameStats ComputeStats(std::vector<double> a_samplesMs, double a_budgetMs) noex
 		const auto misses = std::count_if(a_samplesMs.begin(), a_samplesMs.end(),
 			[a_budgetMs](double value) { return value > a_budgetMs; });
 		stats.missRate = static_cast<double>(misses) / static_cast<double>(stats.samples);
+
+		const double dropMs = a_budgetMs * kDropThresholdFactor;
+		const auto drops = std::count_if(a_samplesMs.begin(), a_samplesMs.end(),
+			[dropMs](double value) { return value > dropMs; });
+		stats.dropRate = static_cast<double>(drops) / static_cast<double>(stats.samples);
 	}
 
 	return stats;

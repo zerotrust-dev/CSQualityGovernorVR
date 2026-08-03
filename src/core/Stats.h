@@ -21,16 +21,42 @@ struct FrameStats
 	double p99Ms = 0.0;
 	double stdDevMs = 0.0;
 
-	// Fraction of samples exceeding the frame budget.
+	// Fraction of samples exceeding the frame budget by any amount.
+	//
+	// This is NOT a stutter metric, and using it as one was a mistake. When the
+	// compositor holds you at the refresh rate, frametime sits exactly ON the
+	// budget, so symmetric micro-jitter puts about half the samples fractionally
+	// above it. The 2026-08-03 run reported 33-44% "miss" for the four capped
+	// presets in a scene that felt completely smooth.
+	//
+	// What it is genuinely good for is a margin indicator:
+	//     ~0%    comfortably under budget, real headroom
+	//     ~30-50% sitting on the cap
+	//     >80%   actually over budget
 	double missRate = 0.0;
+
+	// Fraction of samples that missed the interval outright - the thing you feel
+	// when you turn your head.
+	//
+	// Under vsync a frame either makes its interval (~13.9 ms at 72 Hz) or waits
+	// for the next one (~27.8 ms). Frametimes therefore quantise towards
+	// multiples of the interval, and the honest detector is a threshold placed
+	// between the first and second multiple rather than at the budget itself.
+	double dropRate = 0.0;
 
 	[[nodiscard]] bool Valid() const noexcept { return samples > 0; }
 };
 
+// Multiple of the budget above which a frame is counted as dropped rather than
+// merely over. Half way between making one interval and taking two, so it
+// separates the two populations without being sensitive to where exactly the
+// jitter around each lands.
+inline constexpr double kDropThresholdFactor = 1.5;
+
 // Nearest-rank percentile on an already-sorted, non-empty range.
 [[nodiscard]] double PercentileSorted(const std::vector<double>& a_sorted, double a_percentile) noexcept;
 
-// budgetMs is used only to compute missRate; pass 0 to skip.
+// budgetMs is used only to compute missRate and dropRate; pass 0 to skip both.
 [[nodiscard]] FrameStats ComputeStats(std::vector<double> a_samplesMs, double a_budgetMs) noexcept;
 
 // Rolling window of frametimes with a bounded sample count.
