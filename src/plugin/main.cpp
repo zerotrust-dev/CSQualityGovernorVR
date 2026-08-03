@@ -100,10 +100,17 @@ public:
 		_thread = std::thread([this] { Run(); });
 	}
 
-	void Stop()
+	// Ask the thread to finish. Safe to call FROM the thread itself, which is
+	// exactly what happens when the sweep completes inside a frame callback.
+	void Quiesce() noexcept { _running = false; }
+
+	// Never call this from the sampling thread - joining a thread from within
+	// itself terminates the process. That crashed the game twice on
+	// 2026-08-03, deterministically at the moment the sweep completed.
+	void Join()
 	{
 		_running = false;
-		if (_thread.joinable()) {
+		if (_thread.joinable() && _thread.get_id() != std::this_thread::get_id()) {
 			_thread.join();
 		}
 	}
@@ -190,7 +197,9 @@ void FinishIfDone()
 	}
 
 	g_finished = true;
-	g_frames.Stop();
+	// Quiesce, do NOT join: this runs on the sampling thread. The thread exits
+	// on its own once the flag is observed.
+	g_frames.Quiesce();
 
 	logger::info("frame source: {} frames from {} polls", g_frames.Frames(), g_frames.Polls());
 
@@ -343,9 +352,34 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message)
 }
 }
 
+namespace csgov {
+namespace {
+
+// Without this no log file is written at all and every logger call silently
+// goes nowhere. That cost the live view of the first two real runs.
+void InitLogging()
+{
+	auto path = logger::log_directory();
+	if (!path) {
+		return;
+	}
+	*path /= "CSQualityGovernorVR.log";
+
+	auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(path->string(), true);
+	auto log = std::make_shared<spdlog::logger>("global", std::move(sink));
+	log->set_level(spdlog::level::info);
+	log->flush_on(spdlog::level::info);  // a crash must not cost the log
+	spdlog::set_default_logger(std::move(log));
+	spdlog::set_pattern("[%H:%M:%S.%e] [%l] %v");
+}
+
+}
+}
+
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse);
+	csgov::InitLogging();
 
 	const auto configPath = std::filesystem::path{ "Data" } / "SKSE" / "Plugins" /
 	                        "CSQualityGovernorVR.ini";
