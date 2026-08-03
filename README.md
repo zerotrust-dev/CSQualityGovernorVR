@@ -4,7 +4,12 @@ An SKSE plugin that adapts Community Shaders' upscaling quality to the scene, so
 SkyrimVR holds a locked framerate without being tuned permanently for its worst
 moment.
 
-Status: **design and measurement. No plugin code yet.**
+Status: **cycler built and producing data; governor designed, not yet built.**
+
+The design is settled in **[`docs/GOVERNOR_DESIGN.md`](docs/GOVERNOR_DESIGN.md)**,
+which is the authority for what the governor does and how each phase is tested.
+Changes to it follow the procedure at the top of that file: argument and evidence
+first, then code.
 
 ## The Problem
 
@@ -78,7 +83,7 @@ configured through MCM.
 |---|---|
 | `docs/CS_PLUGIN_API.md` | The API this builds against, including the two mismatched preset enums |
 | `docs/MEASURED_BASELINE.md` | The measured quality ladder and the verified stack it was measured on |
-| `docs/GOVERNOR_DESIGN.md` | Policy specification |
+| `docs/GOVERNOR_DESIGN.md` | **The design contract**: algorithm, parameters, test plan, decision log |
 | `docs/MEASUREMENT_METHOD.md` | How to measure without fooling yourself |
 
 ## Background
