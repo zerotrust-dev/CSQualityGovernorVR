@@ -21,6 +21,8 @@ target_sources(
         main.cpp
         Config.cpp
         Config.h
+        ApiProbe.cpp
+        ApiProbe.h
         Reporter.cpp
         Reporter.h
         PCH.h

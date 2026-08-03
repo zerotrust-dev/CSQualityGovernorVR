@@ -1,3 +1,4 @@
+#include "ApiProbe.h"
 #include "Config.h"
 #include "Reporter.h"
 #include "core/CyclerCore.h"
@@ -148,6 +149,8 @@ std::unique_ptr<CyclerCore> g_cycler;
 std::unique_ptr<Reporter> g_reporter;
 FrameSource g_frames;
 std::atomic_bool g_finished{ false };
+unsigned int g_revisionAcquired = 0;
+double g_lastApiSample = -1.0;
 
 std::filesystem::path OutputDirectory()
 {
@@ -206,6 +209,16 @@ void OnFrame(double a_now, double a_frameTimeMs)
 
 	g_cycler->Tick(a_now, a_frameTimeMs);
 
+	// Sample the whole readable API surface at ~2 Hz for the entire run, so
+	// drift in anything other than the preset is visible afterwards without
+	// anyone having watched for it.
+	if (g_reporter && a_now - g_lastApiSample >= 0.5) {
+		g_lastApiSample = a_now;
+		const auto snap = ApiSnapshot::Capture(g_CSInterface);
+		g_reporter->WriteApiState(std::format("{:.3f},{},{},{:.3f}", a_now,
+			CyclerStateName(g_cycler->State()), snap.CsvValues(), a_frameTimeMs));
+	}
+
 	if (g_config.writePerFrameCsv && g_reporter) {
 		const auto info = FindPreset(g_cycler->CurrentTarget());
 		g_reporter->WriteFrame(a_now, a_frameTimeMs, info ? info->publicValue : 0,
@@ -227,11 +240,33 @@ void BeginSession()
 	g_reporter->SetSessionInfo(info);
 	logger::info("{}", info);
 
+	// Probe the API before touching anything. If this section looks wrong,
+	// nothing after it is worth reading - and that is a result in itself,
+	// available without waiting for a sweep to complete.
+	const auto probe = ApiProbe::Run(g_CSInterface, CSPluginAPI::CSInterfaceRevision,
+		g_revisionAcquired);
+	const auto probeText = probe.Format();
+	for (auto&& line : std::views::split(probeText, '\n')) {
+		const std::string_view view{ line.begin(), line.end() };
+		if (!view.empty()) {
+			logger::info("{}", view);
+		}
+	}
+	g_reporter->WriteText("_apiprobe.txt", probeText);
+	if (!probe.AllOk()) {
+		logger::error("API probe reported problems - see the CHECK lines above");
+	}
+
 	if (g_config.writeCsv && !g_reporter->OpenTransitions()) {
 		logger::error("could not open transitions CSV; results will not be saved");
 	}
 	if (g_config.writePerFrameCsv && !g_reporter->OpenFrames()) {
 		logger::warn("could not open per-frame CSV");
+	}
+	{
+		const ApiSnapshot header{};
+		g_reporter->OpenApiState(
+			std::format("time_s,cycler_state,{},frame_ms", header.CsvHeaderSuffix("api")));
 	}
 
 	g_cycler = std::make_unique<CyclerCore>(g_api, g_config.cycler);
@@ -257,17 +292,37 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message)
 			messaging->Dispatch(CSPluginAPI::CSMessage::kMessage_GetInterface, &request,
 				sizeof(request), CSPluginAPI::CSPluginName);
 			if (request.GetApiFunction) {
-				g_CSInterface = static_cast<CSPluginAPI::ICSInterface001*>(
-					request.GetApiFunction(CSPluginAPI::CSInterfaceRevision));
+				// Negotiate downwards. Asking only for the newest revision and
+				// giving up would report "unavailable" on a build that would
+				// have answered revision 1 or 2 perfectly well - a false
+				// negative that is expensive to diagnose from the game side.
+				for (unsigned int revision = CSPluginAPI::CSInterfaceRevision; revision >= 1;
+					--revision) {
+					if (auto* iface = static_cast<CSPluginAPI::ICSInterface001*>(
+							request.GetApiFunction(revision))) {
+						g_CSInterface = iface;
+						g_revisionAcquired = revision;
+						break;
+					}
+					logger::warn("CS API revision {} not available, trying {}", revision,
+						revision - 1);
+				}
 			}
 			if (g_CSInterface) {
-				logger::info("acquired Community Shaders interface, build {}",
+				logger::info("acquired Community Shaders interface: revision {} (requested {}), "
+							 "build {}",
+					g_revisionAcquired, CSPluginAPI::CSInterfaceRevision,
 					g_CSInterface->getBuildNumber());
+				if (g_revisionAcquired < 3) {
+					logger::warn(
+						"revision {} lacks GetVRUpscalingApplyBlockReasons and "
+						"IsVRUpscalingProfileApplyAllowed; block detection will be blind",
+						g_revisionAcquired);
+				}
 			} else {
 				logger::error(
-					"Community Shaders interface unavailable - is the Particle Lights Fork "
-					"installed, and does it expose API revision {}?",
-					CSPluginAPI::CSInterfaceRevision);
+					"Community Shaders interface unavailable at any revision - is the Particle "
+					"Lights Fork installed and loaded before this plugin?");
 			}
 			break;
 		}

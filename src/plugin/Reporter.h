@@ -26,6 +26,11 @@ public:
 
 	bool OpenTransitions();
 	bool OpenFrames();
+	bool OpenApiState(std::string_view a_header);
+
+	// Free-form artifact, e.g. the startup API probe.
+	void WriteText(std::string_view a_suffix, std::string_view a_content);
+	void WriteApiState(std::string_view a_line);
 
 	void WriteTransition(const TransitionRecord& a_record);
 	void WriteFrame(double a_time, double a_frameTimeMs, std::uint32_t a_presetPublicValue,
@@ -44,6 +49,7 @@ private:
 	std::string _sessionInfo;
 	std::ofstream _transitions;
 	std::ofstream _frames;
+	std::ofstream _apiState;
 };
 
 }

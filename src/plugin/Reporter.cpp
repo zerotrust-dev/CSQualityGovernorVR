@@ -47,6 +47,31 @@ bool Reporter::OpenFrames()
 	return true;
 }
 
+bool Reporter::OpenApiState(std::string_view a_header)
+{
+	_apiState.open(Path("_apistate.csv"));
+	if (!_apiState) {
+		return false;
+	}
+	_apiState << a_header << '\n';
+	return true;
+}
+
+void Reporter::WriteText(std::string_view a_suffix, std::string_view a_content)
+{
+	std::ofstream file(Path(a_suffix));
+	if (file) {
+		file << a_content;
+	}
+}
+
+void Reporter::WriteApiState(std::string_view a_line)
+{
+	if (_apiState) {
+		_apiState << a_line << '\n';
+	}
+}
+
 void Reporter::WriteTransition(const TransitionRecord& a_record)
 {
 	if (!_transitions) {
@@ -177,6 +202,10 @@ void Reporter::Finish(const std::vector<TransitionRecord>& a_records, double a_b
 	if (_frames) {
 		_frames.flush();
 		_frames.close();
+	}
+	if (_apiState) {
+		_apiState.flush();
+		_apiState.close();
 	}
 }
 
