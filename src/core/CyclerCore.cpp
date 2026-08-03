@@ -95,11 +95,25 @@ void CyclerCore::BeginNext(double a_nowSeconds)
 		}
 	}
 
-	const Preset target = _config.order[_orderIndex];
+	// Serpentine traversal: odd sweeps run the ladder backwards.
+	//
+	// Always visiting cheapest-first makes a preset's position in the sweep a
+	// proxy for elapsed time, so anything that drifts during the session - the
+	// scene changing around a standing player, GPU thermals, time of day -
+	// aliases into the preset ranking. Repeating the same direction three times
+	// repeats that bias instead of averaging it away.
+	//
+	// Reversing alternate sweeps cancels a linear drift in the per-preset mean,
+	// and the ascending-vs-descending difference on the same preset measures
+	// how much drift there was. Sweep parity in the CSV recovers the direction.
+	const bool reversed = _config.serpentine && (_sweep % 2) == 1;
+	const std::size_t position =
+		reversed ? _config.order.size() - 1 - _orderIndex : _orderIndex;
+	const Preset target = _config.order[position];
 
 	_current = TransitionRecord{};
 	_current.sweep = _sweep;
-	_current.index = static_cast<int>(_orderIndex);
+	_current.index = static_cast<int>(position);
 	_current.from = _api.GetPreset();
 	_current.to = target;
 	_current.toScale = PresetScale(target);

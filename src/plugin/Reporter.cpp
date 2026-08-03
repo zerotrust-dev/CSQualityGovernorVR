@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <iomanip>
+#include <limits>
 #include <map>
 #include <sstream>
 
@@ -140,6 +141,20 @@ void Reporter::Finish(const std::vector<TransitionRecord>& a_records, double a_b
 			int blockedVisits = 0;
 			double worstP95 = 0.0;
 			float scale = 1.0f;
+
+			// Spread across repeat visits. A mean without this is untrustworthy:
+			// 13/14/15 and 14/14/14 both average to 14, but only one of them is
+			// a measurement.
+			double minMean = std::numeric_limits<double>::max();
+			double maxMean = 0.0;
+
+			// Split by sweep direction. With serpentine traversal, ascending and
+			// descending sweeps see the same preset at opposite ends of the
+			// session, so the gap between them is the session drift.
+			double ascSum = 0.0;
+			int ascCount = 0;
+			double descSum = 0.0;
+			int descCount = 0;
 		};
 
 		std::map<std::uint32_t, Agg> byPreset;  // keyed by public value, ordered
@@ -152,6 +167,15 @@ void Reporter::Finish(const std::vector<TransitionRecord>& a_records, double a_b
 			agg.p95Sum += record.steady.p95Ms;
 			agg.missSum += record.steady.missRate;
 			agg.worstP95 = std::max(agg.worstP95, record.steady.p95Ms);
+			agg.minMean = std::min(agg.minMean, record.steady.meanMs);
+			agg.maxMean = std::max(agg.maxMean, record.steady.meanMs);
+			if ((record.sweep % 2) == 0) {
+				agg.ascSum += record.steady.meanMs;
+				++agg.ascCount;
+			} else {
+				agg.descSum += record.steady.meanMs;
+				++agg.descCount;
+			}
 			if (record.settled) {
 				++agg.settledCount;
 				agg.settleSum += record.SettleLatencySeconds();
@@ -167,18 +191,27 @@ void Reporter::Finish(const std::vector<TransitionRecord>& a_records, double a_b
 			}
 		}
 
-		summary << "preset            scale  visits  mean_ms   p95_ms  worst_p95   miss%  "
-				   "settle_s  timeouts  rbfail  blocked\n";
+		summary << "preset            scale  visits  mean_ms   spread    drift   p95_ms  "
+				   "worst_p95   miss%  settle_s  timeouts  rbfail  blocked\n";
 		summary << "-------------------------------------------------------------------------"
-				   "----------------------------\n";
+				   "-------------------------------------------------\n";
 		for (const auto& [publicValue, agg] : byPreset) {
 			const auto info = FindPresetByPublicValue(publicValue);
 			const double n = agg.visits > 0 ? static_cast<double>(agg.visits) : 1.0;
+			const double spread =
+				agg.visits > 0 && agg.maxMean >= agg.minMean ? agg.maxMean - agg.minMean : 0.0;
+			// Only meaningful once both directions have been seen, i.e. from the
+			// second sweep onwards. Reported as 0 rather than a fabricated number.
+			const double drift = (agg.ascCount > 0 && agg.descCount > 0) ?
+			                         (agg.ascSum / agg.ascCount) - (agg.descSum / agg.descCount) :
+			                         0.0;
 			summary << std::left << std::setw(18)
 					<< (info ? std::string{ info->name } : std::string{ "?" }) << std::right
 					<< std::setw(5) << std::setprecision(2) << agg.scale << std::setw(8)
 					<< agg.visits << std::setw(9) << std::setprecision(2) << (agg.meanSum / n)
-					<< std::setw(9) << (agg.p95Sum / n) << std::setw(11) << agg.worstP95
+					<< std::setw(9) << spread << std::setw(9) << std::showpos << drift
+					<< std::noshowpos << std::setw(9) << (agg.p95Sum / n) << std::setw(11)
+					<< agg.worstP95
 					<< std::setw(8) << std::setprecision(1) << (agg.missSum / n * 100.0)
 					<< std::setw(10) << std::setprecision(3)
 					<< (agg.settledCount > 0 ? agg.settleSum / agg.settledCount : 0.0)
@@ -190,6 +223,14 @@ void Reporter::Finish(const std::vector<TransitionRecord>& a_records, double a_b
 				<< "  p95/worst_p95 matter more than mean: a locked framerate is lost at the\n"
 				<< "  tail, not on average.\n"
 				<< "  miss% is the share of frames exceeding the budget.\n"
+				<< "  spread is max-min of the per-visit mean. If spread is comparable to the\n"
+				<< "  gap between two presets, those presets are not distinguishable in this\n"
+				<< "  scene and the ranking between them means nothing.\n"
+				<< "  drift is ascending-sweep mean minus descending-sweep mean. Near zero is\n"
+				<< "  a stable scene. Large and same-signed across every preset means the\n"
+				<< "  session drifted and the absolute numbers are not comparable to another\n"
+				<< "  session - though the ranking within this one still survives, which is\n"
+				<< "  the reason for reversing alternate sweeps.\n"
 				<< "  settle_s is time from the API call to a stable frametime.\n"
 				<< "  rbfail counts visits where GetUpscalePreset() did not return the value\n"
 				<< "  just set - if non-zero, the API is not doing what it claims.\n";

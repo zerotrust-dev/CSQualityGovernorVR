@@ -3,6 +3,9 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <vector>
+
 using namespace csgov;
 using Catch::Approx;
 
@@ -286,4 +289,66 @@ TEST_CASE("start is idempotent", "[cycler]")
 	Run(core, now, 60.0);
 
 	CHECK(core.Records().size() == CyclerConfig::Default().order.size());
+}
+
+TEST_CASE("serpentine traversal reverses the ladder on odd sweeps", "[cycler]")
+{
+	// Guards against the change silently doing nothing: with serpentine off the
+	// order repeats, with it on sweep 1 must be the exact reverse of sweep 0.
+	// If it ever regresses, every per-preset number becomes confounded with
+	// session drift again, which is invisible in the output.
+	const auto orderOfSweep = [](bool a_serpentine, int a_sweep) {
+		FakeApi api;
+		CyclerConfig config = FastConfig(a_sweep + 1);
+		config.serpentine = a_serpentine;
+		CyclerCore core{ api, config };
+
+		std::vector<Preset> seen;
+		core.SetRecordSink([&](const TransitionRecord& a_record) {
+			if (a_record.sweep == a_sweep) {
+				seen.push_back(a_record.to);
+			}
+		});
+
+		double now = 0.0;
+		core.Start(now);
+		Run(core, now, 400.0);
+		return seen;
+	};
+
+	const auto ladder = CyclerConfig::Default().order;
+	REQUIRE(ladder.size() > 2);
+
+	SECTION("sweep 0 always runs the ladder forwards")
+	{
+		REQUIRE(orderOfSweep(true, 0) == ladder);
+	}
+
+	SECTION("sweep 1 runs it backwards")
+	{
+		std::vector<Preset> reversed{ ladder.rbegin(), ladder.rend() };
+		REQUIRE(orderOfSweep(true, 1) == reversed);
+	}
+
+	SECTION("sweep 2 runs it forwards again")
+	{
+		REQUIRE(orderOfSweep(true, 2) == ladder);
+	}
+
+	SECTION("disabling serpentine keeps every sweep forwards")
+	{
+		REQUIRE(orderOfSweep(false, 1) == ladder);
+	}
+
+	SECTION("every preset is still visited exactly once per sweep")
+	{
+		auto sorted = orderOfSweep(true, 1);
+		auto expected = ladder;
+		const auto byValue = [](Preset a_lhs, Preset a_rhs) {
+			return static_cast<std::uint32_t>(a_lhs) < static_cast<std::uint32_t>(a_rhs);
+		};
+		std::sort(sorted.begin(), sorted.end(), byValue);
+		std::sort(expected.begin(), expected.end(), byValue);
+		REQUIRE(sorted == expected);
+	}
 }

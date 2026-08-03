@@ -90,6 +90,10 @@ struct CyclerConfig
 	int sweeps = 3;
 	double frameBudgetMs = 1000.0 / 72.0;
 
+	// Reverse the ladder on odd sweeps so session drift cancels instead of
+	// biasing the ranking. See BeginNext for why this matters.
+	bool serpentine = true;
+
 	SettleDetector::Config settle{};
 
 	// Visited in this order each sweep. Defaults to the full ladder,
