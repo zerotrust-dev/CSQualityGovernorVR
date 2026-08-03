@@ -44,3 +44,27 @@ The core compiles under both MSVC and GCC on purpose. MSVC accepted a construct
 GCC rejected — a defaulted `Config a_config = {}` argument whose type is nested
 in the same still-incomplete class. Two compilers catch more than one, and the
 job costs a minute.
+
+## The triplet is load-bearing
+
+`VCPKG_TARGET_TRIPLET` must be **`x64-windows-static-md`**. It is set in
+`CMakePresets.json`, and CI configures through that preset rather than passing
+flags by hand.
+
+Without it vcpkg defaults to `x64-windows`, which links spdlog and fmt
+*dynamically*. The plugin then builds cleanly, packages cleanly, installs
+cleanly — and the game rejects it:
+
+```
+checking plugin ...\CSQualityGovernorVR.dll
+couldn't load plugin ...\CSQualityGovernorVR.dll (Error 126)
+```
+
+Error 126 is `ERROR_MOD_NOT_FOUND`: the plugin was found, its dependencies were
+not. Nothing in the build reports a problem, and no plugin log is written at
+all, so the first symptom is a wasted game session. That happened on
+2026-08-03.
+
+`tools/Check-PluginImports.ps1` now runs in CI after the build and fails if the
+DLL imports anything that will not exist at runtime. Diagnosing this from a
+built artifact takes seconds; diagnosing it from the game takes a session.

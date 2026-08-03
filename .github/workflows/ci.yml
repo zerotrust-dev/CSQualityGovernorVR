@@ -56,27 +56,35 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            build-plugin/vcpkg_installed
+            build/release-vr/vcpkg_installed
             ${{ runner.temp }}/vcpkg/downloads
           key: vcpkg-windows-2022-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
 
       - name: Configure
         shell: pwsh
-        run: |
-          cmake -S . -B build-plugin -A x64 `
-            -DCSGOV_BUILD_TESTS=OFF -DCSGOV_BUILD_PLUGIN=ON `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
+        run: cmake --preset release-vr
 
       - name: Build
         shell: pwsh
-        run: cmake --build build-plugin --config Release --parallel
+        run: cmake --build --preset release-vr
+
+      # An SKSE plugin that imports spdlog.dll or fmt.dll builds fine and is
+      # then rejected by the game with Error 126. That is invisible until
+      # someone loads a save, so it is checked here instead.
+      - name: Verify the plugin has no unshipped dependencies
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Path build/release-vr -Recurse -Filter CSQualityGovernorVR.dll |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $dll) { throw "CSQualityGovernorVR.dll was not produced" }
+          ./tools/Check-PluginImports.ps1 -Path $dll
 
       - name: Package
         shell: pwsh
         run: |
           $out = "artifacts/CSQualityGovernorVR"
           New-Item -ItemType Directory -Force -Path "$out/SKSE/Plugins" | Out-Null
-          $dll = Get-ChildItem -Path build-plugin -Recurse -Filter CSQualityGovernorVR.dll |
+          $dll = Get-ChildItem -Path build/release-vr -Recurse -Filter CSQualityGovernorVR.dll |
             Select-Object -First 1 -ExpandProperty FullName
           if (-not $dll) { throw "CSQualityGovernorVR.dll was not produced" }
           Copy-Item -LiteralPath $dll -Destination "$out/SKSE/Plugins/"
