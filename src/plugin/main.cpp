@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <thread>
 
 CSPluginAPI::ICSInterface001* g_CSInterface = nullptr;
 
@@ -28,9 +29,9 @@ std::string TimeStamp()
 // ---------------------------------------------------------------------------
 // Real CS API, behind the same interface the tests fake.
 //
-// Every method here is reached from FrameSource's pump, which runs on the game
-// thread. Keep it that way: CS is not documented as safe to call from anywhere
-// else, and nothing in this class does its own marshalling.
+// KNOWN ISSUE: these are called from FrameSource's sampling thread, not the
+// game thread, and CS is not documented as safe against that. Accepted for now
+// - see the note on FrameSource for why, and for the validated fix.
 // ---------------------------------------------------------------------------
 class LiveCSApi final : public ICSApi
 {
@@ -85,27 +86,26 @@ public:
 // This avoids hooking Present, which needs VR-specific offsets that cannot be
 // verified without the game.
 //
-// It runs as a task that re-arms itself: SKSE drains its task queue once per
-// frame on the game thread, and a task added from inside the drain runs on the
-// next one. So this pumps at frame rate, on the main thread, without a Present
-// hook and without a thread of our own.
+// Samples from a dedicated thread. Each changed delta is treated as a new
+// frame.
 //
-// That last part is the point. This used to be a dedicated polling thread,
-// which was wrong twice over:
+// DO NOT replace this with a task that re-adds itself to SKSE's task queue.
+// That was tried on 2026-08-04 and hung the game every time, at the moment the
+// load-game menu appeared: SKSE runs tasks added *during* a drain within that
+// same drain, so a self-re-arming task never yields the main thread. The log
+// stops at "armed:" and the compositor reprojects a stalled application.
 //
-//   - Every CS API call was made off the game thread. CS is not documented to
-//     be safe against that, and we were doing it on every single tick.
-//   - Ending the sweep called join() on the sampling thread from inside that
-//     same thread, which terminates the process. It crashed the game twice on
-//     2026-08-03, deterministically, at the moment the sweep completed.
+// The known problem with the thread stands and is deliberately accepted for
+// now: CS API calls are made off the game thread. Three sessions on 2026-08-03
+// did so without incident, and Phase 1 needs a working instrument more than a
+// theoretically clean one. The validated fix is to keep this thread purely for
+// timing and marshal each callback through a ONE-SHOT SKSE::AddTask - one task
+// per frame, never re-armed from inside itself - but that change gets its own
+// session and its own verification, not a hurried patch on top of a hang.
 //
-// Both are structural consequences of owning a thread, so the thread is gone
-// rather than guarded.
-//
-// The delta-dedup is kept: at a perfectly locked framerate two consecutive
-// deltas can be bit-identical and undercount. That is why frames and polls are
-// both counted and logged - if the queue ever drains at some rate other than
-// once per frame, the ratio says so instead of the error hiding in the data.
+// The delta-dedup means that at a perfectly locked framerate two consecutive
+// deltas can be bit-identical and undercount. Frames and polls are both counted
+// and logged so that undercounting is visible rather than silent.
 // ---------------------------------------------------------------------------
 class FrameSource
 {
@@ -115,59 +115,53 @@ public:
 	void Start(Callback a_callback)
 	{
 		_callback = std::move(a_callback);
-		_start = std::chrono::steady_clock::now();
 		_running = true;
-		Schedule();
+		_thread = std::thread([this] { Run(); });
 	}
 
-	// Stops the pump after the current tick. Safe to call from inside the
-	// callback, which is exactly what happens when the sweep completes.
+	// Ask the thread to finish. Safe to call FROM the thread itself, which is
+	// exactly what happens when the sweep completes inside a frame callback.
 	void Quiesce() noexcept { _running = false; }
+
+	// Never call this from the sampling thread - joining a thread from within
+	// itself terminates the process. That crashed the game twice on
+	// 2026-08-03, deterministically at the moment the sweep completed.
+	void Join()
+	{
+		_running = false;
+		if (_thread.joinable() && _thread.get_id() != std::this_thread::get_id()) {
+			_thread.join();
+		}
+	}
 
 	[[nodiscard]] std::uint64_t Frames() const noexcept { return _frames.load(); }
 	[[nodiscard]] std::uint64_t Polls() const noexcept { return _polls.load(); }
 
 private:
-	void Schedule()
+	void Run()
 	{
-		auto* tasks = SKSE::GetTaskInterface();
-		if (!tasks) {
-			// Nothing can drive us, so say so rather than appearing to run.
-			_running = false;
-			logger::error("no SKSE task interface; the cycler cannot be driven");
-			return;
-		}
-		tasks->AddTask([this] { Pump(); });
-	}
+		using clock = std::chrono::steady_clock;
+		const auto start = clock::now();
+		float lastDelta = -1.0f;
 
-	void Pump()
-	{
-		if (!_running) {
-			return;
-		}
-
-		++_polls;
-		const float delta = RE::GetSecondsSinceLastFrame();
-		if (delta > 0.0f && delta != _lastDelta) {
-			_lastDelta = delta;
-			++_frames;
-			const double now =
-				std::chrono::duration<double>(std::chrono::steady_clock::now() - _start).count();
-			if (_callback) {
-				_callback(now, static_cast<double>(delta) * 1000.0);
+		while (_running) {
+			++_polls;
+			const float delta = RE::GetSecondsSinceLastFrame();
+			if (delta > 0.0f && delta != lastDelta) {
+				lastDelta = delta;
+				++_frames;
+				const double now =
+					std::chrono::duration<double>(clock::now() - start).count();
+				if (_callback) {
+					_callback(now, static_cast<double>(delta) * 1000.0);
+				}
 			}
-		}
-
-		// Re-arm last, and only if still running, so a callback that quiesces
-		// us is the final tick.
-		if (_running) {
-			Schedule();
+			std::this_thread::sleep_for(std::chrono::microseconds(500));
 		}
 	}
 
 	Callback _callback;
-	std::chrono::steady_clock::time_point _start{};
-	float _lastDelta{ -1.0f };  // main thread only
+	std::thread _thread;
 	std::atomic_bool _running{ false };
 	std::atomic_uint64_t _frames{ 0 };
 	std::atomic_uint64_t _polls{ 0 };
@@ -222,7 +216,8 @@ void FinishIfDone()
 	}
 
 	g_finished = true;
-	// Runs inside the pump's own callback, so this only asks it not to re-arm.
+	// Quiesce, do NOT join: this runs on the sampling thread. The thread exits
+	// on its own once the flag is observed.
 	g_frames.Quiesce();
 
 	logger::info("frame source: {} frames from {} polls", g_frames.Frames(), g_frames.Polls());
