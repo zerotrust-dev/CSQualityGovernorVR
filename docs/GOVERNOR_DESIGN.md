@@ -80,6 +80,10 @@ future reader can tell measurement from assumption.
 | E-4 | The CS Performance Tuning "GPU" field does **not** measure GPU work: it read 9.72 ms at 0.50×, 0.77× and 0.85×. | Measured 2026-08-02; recorded as a trap in `MEASUREMENT_TRAPS.md` |
 | E-5 | The white flash on preset change is an upstream CS bug (uncleared hidden-area mask), fixed 2026-07-25 in `71cc4c76`; the installed build is 2026-07-09. Not a governor constraint. | CS source trace, 2026-08-03 |
 | E-6 | API revision 3 is available; block reasons and apply-allowed are readable. | Startup API probe, same session |
+| E-7 | **The linear cost model holds.** Riverwood in heavy rain, sweep 3 (uniformly heavy, 4 uncensored points): `t_fixed ≈ 8.31 ms`, `t_scaled ≈ 17.45 ms`, `k ≈ 2.10`. Residuals ≤ 0.48 ms. Solving for budget gives `f ≤ 0.320` → **Performance**, and Performance measured 13.57 ms (under) while Balanced measured 14.83 (over). The model chose correctly on data it had not seen. | Session 2026-08-04 21:28 |
+| E-8 | **`drop%` reproduces perception, `miss%` does not.** Capped visits: `miss 0.44–0.50, drop 0.00`. Genuinely heavy visits: `miss 1.00, drop 1.00`. | Same session |
+| E-9 | CS reports `kLoadingMenu` for **over 30 s** after a save finishes loading. A 20 s start delay loses the first transition entirely. | Same session |
+| E-10 | The frame source captures only about **half** the frames — 9,947 from 205,885 polls over 307 s — and the ones it drops are the perfectly-paced ones, because the dedup skips a frame whose delta equals its predecessor. Samples are therefore biased toward jitter and mean/P95 read pessimistic. | Same session |
 
 ### E-1 is the finding that drives the whole design
 
@@ -480,11 +484,12 @@ rate than the average-case baseline.
 | # | Question | Resolved by |
 |---|---|---|
 | Q-1 | Is a true GPU-time signal available? | Phase 1b |
-| Q-2 | Do the rungs separate under real load? | Phase 1 |
-| Q-3 | Is `t = t_fixed + t_scaled·f` accurate enough? | Phase 2 |
-| Q-4 | Why did `LoadingMenu` block 914/915 samples in one session and none in the next? | `apistate.csv` on the next run |
-| Q-5 | Are our frametimes real, or is the delta-dedup undercounting? | frames/polls ratio, next run |
-| Q-6 | Does `k` differ enough between scene classes to need per-class seeding? | Phase 1 across three classes |
+| Q-2 | Do the rungs separate under real load? | **Answered 2026-08-04: yes, decisively** — 13.57 → 25.63 ms across the ladder under load (E-7) |
+| Q-3 | Is `t = t_fixed + t_scaled·f` accurate enough? | **Answered 2026-08-04: yes** (E-7) |
+| Q-4 | Why did `LoadingMenu` block a whole session once? | **Answered 2026-08-04**: it blocks for >30 s after every load (E-9). `StartDelaySeconds` raised 20 → 45 |
+| Q-5 | Are our frametimes real, or is the delta-dedup undercounting? | **Answered 2026-08-04: undercounting, ~54% capture, biased against smooth frames** (E-10). Fix is the one-shot `AddTask` marshalling |
+| Q-6 | Does `k` differ enough between scene classes to need per-class seeding? | Phase 1 across the four classes; one data point so far (`k ≈ 2.10`, rainy exterior) |
+| Q-7 | How much does weather move `k` and `t_fixed`? The 2026-08-04 run roughly **doubled** in cost mid-session (NativeAA 15.4 → 25.7 ms) as rain set in. | Phase 1, by capturing the same spot in different weather |
 
 Answered since the 2026-08-01 revision: transition latency is ~1.0 s (E-2);
 visual disruption is an upstream bug, not inherent (E-5); API revision 3 is

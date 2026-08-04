@@ -77,7 +77,9 @@ struct CyclerConfig
 {
 	// Seconds to wait after arming before the first change, so the player can
 	// get in-world and stop moving.
-	double startDelaySeconds = 20.0;
+	// 45 s: CS reports kLoadingMenu for over 30 s after a save finishes loading,
+	// so a shorter delay burns the first transition's retries and abandons it.
+	double startDelaySeconds = 45.0;
 	// Steady-state sampling time per preset, after settling.
 	double dwellSeconds = 12.0;
 	// How long to wait for frametime to stabilise before giving up on settling.

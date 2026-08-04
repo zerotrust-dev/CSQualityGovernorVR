@@ -146,6 +146,10 @@ void Reporter::Finish(const std::vector<TransitionRecord>& a_records, double a_b
 			double worstP95 = 0.0;
 			float scale = 1.0f;
 
+			// Visits that never produced a frame, excluded from every average
+			// above but reported so their absence is visible.
+			int failedVisits = 0;
+
 			// Spread across repeat visits. A mean without this is untrustworthy:
 			// 13/14/15 and 14/14/14 both average to 14, but only one of them is
 			// a measurement.
@@ -165,8 +169,20 @@ void Reporter::Finish(const std::vector<TransitionRecord>& a_records, double a_b
 		for (const auto& record : a_records) {
 			const auto info = FindPreset(record.to);
 			auto& agg = byPreset[info ? info->publicValue : 0];
-			++agg.visits;
 			agg.scale = record.toScale;
+
+			// A visit that never applied has no frametimes, and its zeroed stats
+			// are not a measurement of anything. Averaging them in reads as a
+			// 0.00 ms frame: on 2026-08-04 one visit was blocked by LoadingMenu
+			// for 31 s and gave up, which dragged UltraPerformance's reported
+			// mean from 13.89 to 10.42 and inflated its spread to 13.90. Both
+			// numbers were pure artefact.
+			if (!record.steady.Valid()) {
+				++agg.failedVisits;
+				continue;
+			}
+
+			++agg.visits;
 			agg.meanSum += record.steady.meanMs;
 			agg.p95Sum += record.steady.p95Ms;
 			agg.missSum += record.steady.missRate;
@@ -199,7 +215,7 @@ void Reporter::Finish(const std::vector<TransitionRecord>& a_records, double a_b
 
 		summary << "preset            scale  visits  mean_ms   spread    drift   p95_ms  "
 				   "worst_p95   miss%   drop%  worstdrop%  settle_s  timeouts  rbfail  "
-				   "blocked\n";
+				   "blocked  failed\n";
 		summary << "-------------------------------------------------------------------------"
 				   "---------------------------------------------------------------------\n";
 		for (const auto& [publicValue, agg] : byPreset) {
@@ -225,7 +241,8 @@ void Reporter::Finish(const std::vector<TransitionRecord>& a_records, double a_b
 					<< std::setw(10) << std::setprecision(3)
 					<< (agg.settledCount > 0 ? agg.settleSum / agg.settledCount : 0.0)
 					<< std::setw(10) << agg.timeoutCount << std::setw(8) << agg.readbackFail
-					<< std::setw(9) << agg.blockedVisits << "\n";
+					<< std::setw(9) << agg.blockedVisits << std::setw(8) << agg.failedVisits
+					<< "\n";
 		}
 
 		summary << "\nNotes\n"
@@ -249,7 +266,11 @@ void Reporter::Finish(const std::vector<TransitionRecord>& a_records, double a_b
 				<< "  the reason for reversing alternate sweeps.\n"
 				<< "  settle_s is time from the API call to a stable frametime.\n"
 				<< "  rbfail counts visits where GetUpscalePreset() did not return the value\n"
-				<< "  just set - if non-zero, the API is not doing what it claims.\n";
+				<< "  just set - if non-zero, the API is not doing what it claims.\n"
+				<< "  failed counts visits that never applied and so produced no frames.\n"
+				<< "  They are excluded from every average above rather than being averaged\n"
+				<< "  in as 0 ms. A non-zero value means 'visits' is smaller than the number\n"
+				<< "  of sweeps, so the remaining averages rest on fewer samples.\n";
 	}
 
 	if (_transitions) {

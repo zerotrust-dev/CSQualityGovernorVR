@@ -352,3 +352,35 @@ TEST_CASE("serpentine traversal reverses the ladder on odd sweeps", "[cycler]")
 		REQUIRE(sorted == expected);
 	}
 }
+
+TEST_CASE("a visit that never applies is not a measurement", "[cycler]")
+{
+	// 2026-08-04: the first transition was blocked by LoadingMenu for 31 s and
+	// abandoned. Its zeroed stats were then averaged into the summary as a
+	// 0.00 ms frame, reporting UltraPerformance at 10.42 ms mean / 13.90 spread
+	// when its real visits were all 13.88-13.90. The record must be
+	// distinguishable from a real one so the reporter can exclude it.
+	FakeApi api;
+	api.blockMask = static_cast<std::uint32_t>(BlockReason::LoadingMenu);
+
+	CyclerConfig config = FastConfig(1);
+	config.blockGiveUpSeconds = 2.0;
+	CyclerCore core{ api, config };
+
+	std::vector<TransitionRecord> records;
+	core.SetRecordSink([&](const TransitionRecord& a_record) { records.push_back(a_record); });
+
+	double now = 0.0;
+	core.Start(now);
+	Run(core, now, 120.0);
+
+	REQUIRE_FALSE(records.empty());
+	const auto& first = records.front();
+
+	// Abandoned, so it carries no frames at all...
+	REQUIRE(first.steady.samples == 0);
+	REQUIRE_FALSE(first.steady.Valid());
+	// ...and the zeros must not be mistaken for a fast frame.
+	REQUIRE(first.steady.meanMs == Approx(0.0));
+	REQUIRE(first.applyAttempts > 1);
+}
