@@ -4,9 +4,21 @@ Status: **agreed design, not yet implemented.** Supersedes the threshold-based
 policy in the 2026-08-01 revision of this file. See [Decision Log](#decision-log)
 for what changed and why.
 
-This document is the contract. The point of writing it before building is that we
-stop improvising. Everything the governor does should be traceable to a decision
-recorded here.
+This document is the contract, and it has two readers.
+
+**For us**, it is the reason we stop improvising: everything the governor does
+should be traceable to a decision recorded here, and every decision to a
+measurement.
+
+**For the Community Shaders author**, it is the evidence that the patch we will
+eventually offer (D-11a) came from analysis rather than from bundling something
+that happened to work. The evidence table cites its sources, the decision log
+records what we got wrong and why we changed it, and superseded decisions are
+kept rather than quietly deleted. A reviewer should be able to check our
+reasoning, not just our results.
+
+Conclusions we later falsified are listed in `MEASUREMENT_TRAPS.md`. They stay
+there deliberately.
 
 ## How To Change This Document
 
@@ -84,6 +96,11 @@ future reader can tell measurement from assumption.
 | E-8 | **`drop%` reproduces perception, `miss%` does not.** Capped visits: `miss 0.44–0.50, drop 0.00`. Genuinely heavy visits: `miss 1.00, drop 1.00`. | Same session |
 | E-9 | CS reports `kLoadingMenu` for **over 30 s** after a save finishes loading. A 20 s start delay loses the first transition entirely. | Same session |
 | E-10 | The frame source captures only about **half** the frames — 9,947 from 205,885 polls over 307 s — and the ones it drops are the perfectly-paced ones, because the dedup skips a frame whose delta equals its predecessor. Samples are therefore biased toward jitter and mean/P95 read pessimistic. | Same session |
+| E-11 | **E-10 is not cosmetic: it inverted the ladder.** In Markarth, Quality (f=0.444) measured *faster* than Balanced (f=0.346) in every clean sweep of two sessions, which is not physical. Cause: within the same 8 s dwell we captured 209 frames of Balanced and 433 of Quality (36% vs 75%). The steadier preset is sampled less, and what survives is disproportionately jitter, biasing it upward. Riverwood escaped this only because its rungs were far enough apart. | Sessions 2026-08-05 20:52 and 21:02 |
+| E-12 | **A true headroom signal exists and is uncensored.** PrimaShock's overhead figure derives from `appGpuTimeUs`, measured with `D3D11_QUERY_TIMESTAMP_DISJOINT` + start/end `D3D11_QUERY_TIMESTAMP` (`d3d11.cpp:777-781`, accumulated `layer.cpp:2251`). Measured in Markarth it is monotonic — 37/25/16/10/5% → GPU 8.75/10.42/11.67/12.50/13.20 ms — over exactly the range where our frametimes were flat and disordered. | OpenXR-Toolkit 1.3.2 source; user readings 2026-08-05 |
+| E-13 | **Observed control thresholds.** ≥10% overhead holds a solid 72; ~5% yields 70–71; 0% drops below. Reported as a stable perceptual rule across many sessions: whenever overhead is displayed at all, turning is smooth. | User observation, 2026-08-05 |
+| E-14 | **The CS VR API exists specifically to be driven by external governors.** The mod page states it "allows external mods like Shizof's VR FPS Stabilizer to dynamically toggle shadows, SSGI, and upscaler quality modes based on performance, weather and location conditions." | Nexus 166950 description, captured from MO2 `meta.ini` |
+| E-15 | Installed baseline identified exactly: **PL3.15 = release RC74 = commit `eb54a72c`**, published 2026-07-09T21:03Z, downloaded 2026-07-09T21:13Z. | MO2 `meta.ini`, GitHub releases API |
 
 ### E-1 is the finding that drives the whole design
 
@@ -154,7 +171,13 @@ which needs no functional form at all.
 
 ### D-3 — Preset selection
 
-Given a frametime target `T = budget · (1 − margin)`:
+Given a frametime target `T = budget − margin_ms`:
+
+**The margin is absolute, not a fraction of budget.** With `t_fixed ≈ 11 ms`
+against a 13.889 ms budget, only ~2.8 ms is available for resolution-dependent
+work; a 10% proportional margin is 1.39 ms, or **half of all the headroom there
+is**, and would drive the governor two rungs below what the scene supports.
+Measured 2026-08-05 in clear-weather Riverwood.
 
 ```
 t_fixed · (1 + k · f) ≤ T
@@ -282,6 +305,108 @@ running.
 This replaces the 2026-08-01 "remember what failed at rung *n*" rule, which it
 subsumes with one mechanism and fewer parameters.
 
+### D-10 — Headroom is the primary signal; frametime is the fallback
+
+Where GPU time is available, control on **headroom** — how far GPU work sits
+below the frame budget — rather than on the cost model of D-2/D-3.
+
+This is not a refinement of D-1 through D-6; it removes most of their reason to
+exist. Those decisions are engineering around a **missing measurement**:
+
+| Decision | Why it existed | With headroom |
+|---|---|---|
+| D-4, two regimes | frametime is censored at the cap | **obsolete** — both directions informed |
+| D-4, blind upward probe | no way to see spare capacity | **obsolete** — spare capacity is read directly |
+| D-5, `k` from transitions | a cost sample only arrived when the preset changed | **obsolete** — every frame is a sample |
+| D-2/D-3, cost model | the only way to infer the cheapest safe rung | **optional** — needed only to jump several rungs at once |
+
+What remains is a far simpler loop, and it is the user's own formulation: climb
+while there is headroom to spare, descend when there is not.
+
+```
+if headroom < descend_floor   → step down
+if headroom > climb_floor     → step up one rung
+otherwise                     → hold
+```
+
+**Both tiers must be retained.** The governor has to work with no headroom
+signal at all, because the first shipped version will run against an unmodified
+Community Shaders. Frametime plus the cost model is that fallback: today's data
+shows it converges on the same rung, just one rung conservative near the
+boundary and tens of seconds slower to climb (D-4's probe). Headroom is an
+**enhancement that removes those two weaknesses**, never a hard dependency.
+
+### D-10a — Thresholds come from measurement, not theory
+
+E-13 gives them directly: `climb_floor ≈ 10%`, `descend_floor ≈ 5%`. The user's
+"climb until overhead reaches zero" is the true maximum-quality point but has
+zero tolerance for a load spike; 10% is where 72 was observed to hold reliably
+and 5% is where it was observed to slip.
+
+### D-11 — Fork Community Shaders; do not ship the fork
+
+Measuring GPU time correctly requires brackets around the frame's render work.
+A bracket that accidentally encloses the vsync wait re-measures frametime and
+reproduces the censoring we are trying to escape. Three places can bracket
+correctly:
+
+1. **An OpenXR API layer** — correct by construction, but layers install via
+   registry keys that mod managers cannot write, load into *every* OpenXR
+   application on the machine, and interact with PrimaShock's own layer. A bad
+   trade for a mod whose promise is "it just holds 72".
+2. **Hooking Skyrim's renderer from the plugin** — no extra install, but the
+   hook points are guesswork without local test capability.
+3. **Community Shaders itself** — already holds the device, already brackets its
+   render passes, and is already a hard requirement of this project.
+
+**Choose 3.** Its distribution story is the only good one: once upstreamed, the
+dependency is "CS ≥ version X", which MGO picks up on its own. Nothing extra is
+ever installed.
+
+**The fork is scaffolding, not a product.** We do not ask users to replace their
+CS. The patch is developed in `zerotrust-dev/skyrim-community-shaders`, proven
+against a working governor, and then offered upstream.
+
+**Baseline pinned at PL3.15 / RC74 / `eb54a72c`** (E-15) — the exact build every
+measurement in this document was taken against. Pinning costs us a rebase onto a
+fast-moving `Upscaling.cpp` before the PR; that is accepted deliberately, in
+exchange for not invalidating the evidence base mid-project. It does mean the
+patch should not be left to age for months.
+
+### D-11a — The upstream case is an extension, not a request
+
+E-14 matters more than it first appears. The CS VR API was **built to be driven
+by exactly this kind of external controller** — the mod page names dynamic
+upscaler-quality switching driven by performance as an intended use.
+
+So the eventual conversation with the author is not "please add a feature we
+want". It is:
+
+> Your API was designed for external mods to drive quality from performance. We
+> built one. It works, and here are the measurements. The one thing the API
+> cannot currently supply is the signal that makes the decision correct rather
+> than merely conservative — GPU time, which you already measure the ingredients
+> for and which nothing outside CS can obtain honestly. Here is the patch.
+
+That is why this document exists in the form it does: an author receiving a
+patch is entitled to know whether it came from analysis or from guesswork. The
+evidence table, the decision log and the superseded decisions are the answer.
+
+### D-12 — The run must be readable from the logs alone
+
+Testing must not depend on the user narrating what they saw. Every session
+records, continuously and time-aligned:
+
+- frametime, and GPU time / headroom once available
+- the current preset, and every transition with its trigger and latency
+- what the controller decided and **why** — including decisions to hold
+- block reasons, readback results, and any refused apply
+
+The target is that the user walks around normally and the entire session is
+reconstructible afterwards from the artifacts. This is not convenience: every
+wrong conclusion recorded in `MEASUREMENT_TRAPS.md` came from reasoning about
+something nobody was measuring at the time.
+
 ---
 
 ## 5. The Algorithm
@@ -347,7 +472,9 @@ each — **none of them are to be tuned by feel in-game.**
 | Symbol | Meaning | Initial | Determined by |
 |---|---|---|---|
 | `budget` | frame budget | 13.89 ms (72 Hz) | headset refresh |
-| `margin` | safety margin below budget | 0.10 | Phase 3 sweep |
+| `margin_ms` | absolute safety margin below budget | 0.35 ms | Phase 3 sweep |
+| `climb_floor` | headroom above which to raise quality | 10% | E-13, refined in Phase 3 |
+| `descend_floor` | headroom below which to lower quality | 5% | E-13, refined in Phase 3 |
 | `drop_max` | drop rate that triggers a step down | 0.02 | Phase 3 |
 | `drop_floor` | drop rate below which running counts as clean | 0.005 | Phase 1 |
 | `cap_tol` | P95 within this fraction of budget means capped | 0.05 | Phase 1 |
@@ -495,6 +622,46 @@ rate than the average-case baseline.
 
 ---
 
+## 7a. Roadmap
+
+Ordered by dependency. Each step has an artifact and a stop condition; a step
+that fails sends us back to Section 4 rather than being worked around.
+
+| # | Step | Why now | Done when |
+|---|---|---|---|
+| **1** | **Fix the frame sampler.** Thread for timing, one-shot `SKSE::AddTask` per frame, no dedup. | E-11: the bias inverted the ladder. Every number is currently suspect. Independent of everything else and the smallest change. | Capture rate ≈100%; Markarth ladder monotonic on re-run |
+| **2** | **Telemetry (D-12).** Continuous time-aligned log of frametime, preset, transitions, decisions and block reasons. | Makes every later step testable without the user narrating. | A session is fully reconstructible from artifacts alone |
+| **3** | **Re-run Phase 1** on the fixed sampler — Riverwood clear/storm, Markarth, one Medium. | Re-establishes the cost curves on trustworthy data. | `k` agrees within 15% across sweeps; residuals < 0.5 ms |
+| **4** | **Fork CS at `eb54a72c`**, add the GPU timer, expose `GetLastFrameGpuTimeUs()` at interface revision 4. | The measurement that makes control correct rather than conservative. | Our GPU time tracks PrimaShock's overlay across a sweep |
+| **5** | **Controller**, tiered: headroom loop (D-10) when GPU time is present, cost model (D-2/D-3) when not. Parameters chosen in CI by replaying recorded traces. | Both tiers must work; the first shipped version runs against unmodified CS. | Phase 3 simulation passes on all captured traces |
+| **6** | **Shadow mode**, then live. | First live run must not also be the first test. | Phase 4 and 5 pass |
+| **7** | **Upstream the CS patch** (D-11a), with this document and the measurements. | Removes the fork from the distribution path entirely. | Patch offered; governor ships against stock CS |
+
+Steps 1–3 are on the governor repo and unblock everything. Step 4 is the only
+one touching Community Shaders.
+
+## 7b. Phase T — Telemetry
+
+**Procedure.** Extend the existing capture set so a free-roaming session — not
+just a scripted sweep — is fully readable afterwards:
+
+- `*_timeline.csv` — one row per decision interval: time, preset, frametime P50
+  and P95, drop rate, GPU time and headroom when available, controller state,
+  the decision taken, and the reason it was taken.
+- Transition rows keep their existing detail (latency, settle, block reasons,
+  readback).
+- The existing `apistate.csv` continues sampling the whole readable API surface,
+  so drift in anything we are *not* controlling stays visible.
+
+**Passes if** a session where the user simply walks around can be reconstructed
+— what the scene cost, what the controller saw, what it did, and why — without
+asking them a single question.
+
+**This phase exists because of a measured failure**, not tidiness. The Markarth
+ladder inversion (E-11) was invisible in the summary and only became explicable
+after inspecting per-visit sample counts. Anything not logged is something we
+will later reason about wrongly.
+
 ## 8. Open Questions
 
 | # | Question | Resolved by |
@@ -514,6 +681,33 @@ available (E-6).
 ---
 
 ## Decision Log
+
+**2026-08-05 — Headroom becomes the primary signal (D-10), CS is forked rather
+than a second layer built (D-11), telemetry becomes a first-class phase (D-12).**
+
+Three findings in one session. First, E-11: the frame sampler's bias was not
+cosmetic — it inverted Quality against Balanced in Markarth, because we captured
+36% of one preset's frames and 75% of another's in the same dwell. Second, E-12:
+a true uncensored headroom signal exists and is already measured on this stack by
+PrimaShock, via D3D11 timestamp queries, and it is monotonic exactly where our
+frametimes were flat and disordered. Third, E-13: the user's long-standing
+observation supplies the control thresholds directly (10% holds, 5% slips).
+
+Together these demote most of D-1 through D-6 to a fallback tier. Those decisions
+were engineering around a missing measurement; supplying the measurement removes
+the two-regime split, the blind upward probe, and the need to estimate `k` only
+at transitions. The remaining loop is the user's own: climb while headroom
+exists, descend when it does not. The cost model is retained for the
+no-GPU-time case and for multi-rung jumps.
+
+The delivery vehicle changed with it. A second OpenXR layer was proposed and
+rejected on distribution grounds (registry install, loads into every OpenXR
+application, layer-ordering interactions with PrimaShock). Patching CS is chosen
+instead because it is the only route whose end state adds nothing to a user's
+install, and because E-14 shows the CS VR API was built for exactly this kind of
+external controller — making the eventual upstream conversation an extension of
+stated intent rather than a feature request. Baseline pinned at PL3.15 / RC74 /
+`eb54a72c` (E-15), the build every measurement here was taken against.
 
 **2026-08-03 — "Over budget" replaced by "dropped" as the failure metric (D-7a,
 D-7b).**
