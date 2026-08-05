@@ -29,9 +29,9 @@ std::string TimeStamp()
 // ---------------------------------------------------------------------------
 // Real CS API, behind the same interface the tests fake.
 //
-// KNOWN ISSUE: these are called from FrameSource's sampling thread, not the
-// game thread, and CS is not documented as safe against that. Accepted for now
-// - see the note on FrameSource for why, and for the validated fix.
+// Every method here is reached from FrameSource's per-frame task, which runs on
+// the game thread. Keep it that way: CS is not documented as safe to call from
+// anywhere else, and nothing in this class does its own marshalling.
 // ---------------------------------------------------------------------------
 class LiveCSApi final : public ICSApi
 {
@@ -86,26 +86,35 @@ public:
 // This avoids hooking Present, which needs VR-specific offsets that cannot be
 // verified without the game.
 //
-// Samples from a dedicated thread. Each changed delta is treated as a new
-// frame.
+// Delivers exactly one callback per rendered frame, on the game thread.
 //
-// DO NOT replace this with a task that re-adds itself to SKSE's task queue.
-// That was tried on 2026-08-04 and hung the game every time, at the moment the
-// load-game menu appeared: SKSE runs tasks added *during* a drain within that
-// same drain, so a self-re-arming task never yields the main thread. The log
-// stops at "armed:" and the compositor reprojects a stalled application.
+// A thread owns the pacing; the task does the work. Each iteration posts ONE
+// task and then waits for it to run before posting the next. Since SKSE drains
+// its queue once per frame, one task per drain means one callback per frame -
+// so the frame boundary comes from SKSE's own cadence rather than from us
+// trying to infer it.
 //
-// The known problem with the thread stands and is deliberately accepted for
-// now: CS API calls are made off the game thread. Three sessions on 2026-08-03
-// did so without incident, and Phase 1 needs a working instrument more than a
-// theoretically clean one. The validated fix is to keep this thread purely for
-// timing and marshal each callback through a ONE-SHOT SKSE::AddTask - one task
-// per frame, never re-armed from inside itself - but that change gets its own
-// session and its own verification, not a hurried patch on top of a hang.
+// Two failures this design exists to avoid, both measured:
 //
-// The delta-dedup means that at a perfectly locked framerate two consecutive
-// deltas can be bit-identical and undercount. Frames and polls are both counted
-// and logged so that undercounting is visible rather than silent.
+//   1. The task must NEVER re-arm itself. That was tried on 2026-08-04 and hung
+//      the game every launch, the moment the load-game menu appeared: SKSE runs
+//      tasks added during a drain within that same drain, so a self-re-arming
+//      task never yields the main thread. Re-arming from the thread is what
+//      makes this safe - the next task is only posted after the previous one
+//      has returned, so a drain never sees more than one of ours.
+//
+//   2. There is no delta-dedup, because dedup was silently destroying the data.
+//      Skipping frames whose delta equalled the previous one meant the steadier
+//      a preset ran, the fewer of its frames we kept - and what survived was
+//      disproportionately jitter. On 2026-08-05 that captured 36% of Balanced's
+//      frames against 75% of Quality's in the same 8 s dwell, and reported
+//      Quality as FASTER than Balanced despite rendering 28% more pixels.
+//      Running once per frame removes the need to detect frames at all.
+//
+// Health is now reported as capture completeness: the sum of the frametimes we
+// observed against wall-clock elapsed. Near 1.0 means we saw every frame. Well
+// below 1.0 means the queue is draining less often than once per frame, and the
+// data should be distrusted rather than quietly used.
 // ---------------------------------------------------------------------------
 class FrameSource
 {
@@ -115,56 +124,95 @@ public:
 	void Start(Callback a_callback)
 	{
 		_callback = std::move(a_callback);
+		_start = std::chrono::steady_clock::now();
 		_running = true;
 		_thread = std::thread([this] { Run(); });
 	}
 
-	// Ask the thread to finish. Safe to call FROM the thread itself, which is
-	// exactly what happens when the sweep completes inside a frame callback.
-	void Quiesce() noexcept { _running = false; }
-
-	// Never call this from the sampling thread - joining a thread from within
-	// itself terminates the process. That crashed the game twice on
-	// 2026-08-03, deterministically at the moment the sweep completed.
-	void Join()
+	// Ask the pump to stop. Safe to call from inside the callback, which is
+	// exactly what happens when the sweep completes.
+	void Quiesce() noexcept
 	{
 		_running = false;
+		_pending.store(false, std::memory_order_release);
+	}
+
+	// Never call this from inside the callback - the callback runs on the game
+	// thread, not the pacing thread, so this is safe there, but joining a thread
+	// from within itself terminates the process. That crashed the game twice on
+	// 2026-08-03.
+	void Join()
+	{
+		Quiesce();
 		if (_thread.joinable() && _thread.get_id() != std::this_thread::get_id()) {
 			_thread.join();
 		}
 	}
 
 	[[nodiscard]] std::uint64_t Frames() const noexcept { return _frames.load(); }
-	[[nodiscard]] std::uint64_t Polls() const noexcept { return _polls.load(); }
+
+	// Seconds of frametime actually observed, from the deltas themselves.
+	[[nodiscard]] double SampledSeconds() const noexcept
+	{
+		return static_cast<double>(_sampledMicros.load()) / 1.0e6;
+	}
+
+	[[nodiscard]] double ElapsedSeconds() const noexcept
+	{
+		return std::chrono::duration<double>(std::chrono::steady_clock::now() - _start).count();
+	}
+
+	// 1.0 means every frame was seen. Anything much lower invalidates the run.
+	[[nodiscard]] double CaptureRatio() const noexcept
+	{
+		const double elapsed = ElapsedSeconds();
+		return elapsed > 0.0 ? SampledSeconds() / elapsed : 0.0;
+	}
 
 private:
 	void Run()
 	{
-		using clock = std::chrono::steady_clock;
-		const auto start = clock::now();
-		float lastDelta = -1.0f;
+		auto* tasks = SKSE::GetTaskInterface();
+		if (!tasks) {
+			_running = false;
+			logger::error("no SKSE task interface; the cycler cannot be driven");
+			return;
+		}
 
 		while (_running) {
-			++_polls;
+			_pending.store(true, std::memory_order_release);
+			tasks->AddTask([this] { Pump(); });
+
+			// Wait for that task to run before posting another. This is the
+			// whole safety property: at most one of our tasks per drain.
+			while (_pending.load(std::memory_order_acquire) && _running) {
+				std::this_thread::sleep_for(std::chrono::microseconds(200));
+			}
+		}
+	}
+
+	void Pump()
+	{
+		if (_running) {
 			const float delta = RE::GetSecondsSinceLastFrame();
-			if (delta > 0.0f && delta != lastDelta) {
-				lastDelta = delta;
+			if (delta > 0.0f) {
 				++_frames;
-				const double now =
-					std::chrono::duration<double>(clock::now() - start).count();
+				_sampledMicros.fetch_add(static_cast<std::uint64_t>(delta * 1.0e6f));
 				if (_callback) {
-					_callback(now, static_cast<double>(delta) * 1000.0);
+					_callback(ElapsedSeconds(), static_cast<double>(delta) * 1000.0);
 				}
 			}
-			std::this_thread::sleep_for(std::chrono::microseconds(500));
 		}
+		_pending.store(false, std::memory_order_release);
 	}
 
 	Callback _callback;
 	std::thread _thread;
+	std::chrono::steady_clock::time_point _start{};
 	std::atomic_bool _running{ false };
+	std::atomic_bool _pending{ false };
 	std::atomic_uint64_t _frames{ 0 };
-	std::atomic_uint64_t _polls{ 0 };
+	std::atomic_uint64_t _sampledMicros{ 0 };
 };
 
 // ---------------------------------------------------------------------------
@@ -220,7 +268,18 @@ void FinishIfDone()
 	// on its own once the flag is observed.
 	g_frames.Quiesce();
 
-	logger::info("frame source: {} frames from {} polls", g_frames.Frames(), g_frames.Polls());
+	// Capture completeness decides whether anything above is worth reading.
+	// Below ~0.9 the queue drained less often than once per frame, and every
+	// per-preset number carries a load-dependent sampling bias - the defect that
+	// inverted Quality against Balanced on 2026-08-05.
+	const double ratio = g_frames.CaptureRatio();
+	logger::info("frame source: {} frames, {:.1f}s sampled of {:.1f}s elapsed (capture {:.1%})",
+		g_frames.Frames(), g_frames.SampledSeconds(), g_frames.ElapsedSeconds(), ratio);
+	if (ratio < 0.9) {
+		logger::error("capture ratio {:.1%} - fewer frames seen than rendered. Per-preset "
+					  "comparisons in this run are biased and should not be trusted.",
+			ratio);
+	}
 
 	if (g_reporter) {
 		g_reporter->Finish(g_cycler->Records(), g_config.cycler.frameBudgetMs);
