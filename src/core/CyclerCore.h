@@ -77,9 +77,14 @@ struct CyclerConfig
 {
 	// Seconds to wait after arming before the first change, so the player can
 	// get in-world and stop moving.
-	// 45 s: CS reports kLoadingMenu for over 30 s after a save finishes loading,
-	// so a shorter delay burns the first transition's retries and abandons it.
-	double startDelaySeconds = 45.0;
+	// Minimum settle-in time before the first change. This is a floor, not the
+	// whole gate: the sweep also waits for the API to accept changes, because
+	// kLoadingMenu persists for a variable 31-115 s after the load completes.
+	double startDelaySeconds = 20.0;
+
+	// Give up waiting for CS to accept changes and start regardless. Prevents a
+	// permanently-blocked session from producing nothing at all.
+	double startMaxWaitSeconds = 300.0;
 	// Steady-state sampling time per preset, after settling.
 	double dwellSeconds = 12.0;
 	// How long to wait for frametime to stabilise before giving up on settling.
@@ -153,6 +158,7 @@ private:
 	std::size_t _orderIndex = 0;
 
 	TransitionRecord _current{};
+	bool _loggedStartWait = false;  // log the wait once, not every tick
 	SettleDetector _settle;
 	FrameWindow _steadyWindow{ 4096 };
 	FrameWindow _wholeWindow{ 8192 };

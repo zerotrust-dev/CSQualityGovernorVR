@@ -141,6 +141,7 @@ PluginConfig PluginConfig::Load(const std::filesystem::path& a_path)
 
 	config.cycler.startDelaySeconds =
 		ini.GetDouble("StartDelaySeconds", config.cycler.startDelaySeconds);
+		ini.GetDouble("StartMaxWaitSeconds", config.cycler.startMaxWaitSeconds);
 	config.cycler.dwellSeconds = ini.GetDouble("DwellSeconds", config.cycler.dwellSeconds);
 	config.cycler.settleTimeoutSeconds =
 		ini.GetDouble("SettleTimeoutSeconds", config.cycler.settleTimeoutSeconds);

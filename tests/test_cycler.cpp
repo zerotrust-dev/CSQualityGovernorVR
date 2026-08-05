@@ -45,6 +45,10 @@ CyclerConfig FastConfig(int a_sweeps = 1)
 	config.settleTimeoutSeconds = 2.0;
 	config.retryIntervalSeconds = 0.1;
 	config.blockGiveUpSeconds = 3.0;
+	// Off by default so the blocking tests below still exercise the retry and
+	// give-up paths rather than parking in Starting. The two tests that care
+	// about the readiness gate set this explicitly.
+	config.startMaxWaitSeconds = 0.0;
 	config.sweeps = a_sweeps;
 	config.settle.minSamples = 3;
 	config.settle.warmupSamples = 1;
@@ -383,4 +387,58 @@ TEST_CASE("a visit that never applies is not a measurement", "[cycler]")
 	// ...and the zeros must not be mistaken for a fast frame.
 	REQUIRE(first.steady.meanMs == Approx(0.0));
 	REQUIRE(first.applyAttempts > 1);
+}
+
+TEST_CASE("the sweep waits for CS to accept changes, not just for a timer", "[cycler][blocking]")
+{
+	// 2026-08-05: kLoadingMenu stayed asserted for 115 s after the load while
+	// frames ran at a steady 14 ms, so a 45 s fixed delay still burned the first
+	// three visits of sweep 0. The gate has to be the API, not the clock.
+	FakeApi api;
+	api.blockMask = static_cast<std::uint32_t>(BlockReason::LoadingMenu);
+
+	CyclerConfig config = FastConfig(1);
+	config.startDelaySeconds = 1.0;
+	config.startMaxWaitSeconds = 100.0;
+	CyclerCore core{ api, config };
+
+	double now = 0.0;
+	core.Start(now);
+
+	// Well past the start delay, but CS is still refusing.
+	Run(core, now, 5.0);
+	CHECK(core.State() == CyclerState::Starting);
+	CHECK(api.setCalls == 0);
+
+	// It clears; the sweep begins and loses nothing.
+	api.blockMask = 0;
+	Run(core, now, 60.0);
+	CHECK(api.setCalls > 0);
+
+	const auto& records = core.Records();
+	REQUIRE(records.size() == config.order.size());
+	for (const auto& record : records) {
+		CHECK(record.steady.Valid());  // no visit abandoned to the block
+	}
+}
+
+TEST_CASE("a permanently blocked start eventually proceeds anyway", "[cycler][blocking]")
+{
+	// Waiting forever would turn a blocked session into no data at all.
+	FakeApi api;
+	api.blockMask = static_cast<std::uint32_t>(BlockReason::LoadingMenu);
+
+	CyclerConfig config = FastConfig(1);
+	config.startDelaySeconds = 1.0;
+	config.startMaxWaitSeconds = 5.0;
+	config.blockGiveUpSeconds = 2.0;
+	CyclerCore core{ api, config };
+
+	double now = 0.0;
+	core.Start(now);
+	Run(core, now, 4.0);
+	CHECK(core.State() == CyclerState::Starting);
+
+	Run(core, now, 60.0);
+	CHECK(core.State() != CyclerState::Starting);
 }

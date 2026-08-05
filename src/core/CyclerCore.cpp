@@ -59,6 +59,7 @@ void CyclerCore::Start(double a_nowSeconds)
 	_sweep = 0;
 	_orderIndex = 0;
 	_records.clear();
+	_loggedStartWait = false;
 	_state = CyclerState::Starting;
 	_stateEnteredAt = a_nowSeconds;
 
@@ -219,7 +220,43 @@ void CyclerCore::Tick(double a_nowSeconds, double a_frameTimeMs)
 		return;
 
 	case CyclerState::Starting:
-		if (a_nowSeconds - _stateEnteredAt >= _config.startDelaySeconds) {
+		{
+			_wholeWindow.Push(a_frameTimeMs);
+			const double waited = a_nowSeconds - _stateEnteredAt;
+			if (waited < _config.startDelaySeconds) {
+				return;
+			}
+
+			// Wait for CS to actually accept changes, not just for a timer.
+			//
+			// kLoadingMenu stays asserted long after the game is playable and
+			// for a wildly variable time: 31 s on 2026-08-04, but 115 s on
+			// 2026-08-05 from the same save, while frames flowed at a steady
+			// 14 ms throughout. A fixed delay cannot straddle that. Tuning it
+			// upwards only trades lost transitions for wasted session time, and
+			// on 2026-08-05 it still burned the first three visits of sweep 0.
+			if (!_api.ApplyAllowed()) {
+				if (waited < _config.startMaxWaitSeconds) {
+					if (!_loggedStartWait) {
+						_loggedStartWait = true;
+						Log("start delay elapsed but CS is not accepting changes yet; "
+							"waiting for it to clear");
+					}
+					return;
+				}
+				char buf[160]{};
+				std::snprintf(buf, sizeof(buf),
+					"CS still refusing after %.0fs (reasons 0x%X) - starting anyway so the "
+					"session is not wasted",
+					waited, _api.BlockReasons());
+				Log(buf);
+			} else if (_loggedStartWait) {
+				char buf[96]{};
+				std::snprintf(buf, sizeof(buf), "CS accepting changes after %.1fs; starting",
+					waited);
+				Log(buf);
+			}
+
 			BeginNext(a_nowSeconds);
 		}
 		return;
