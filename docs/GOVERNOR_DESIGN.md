@@ -423,15 +423,31 @@ E-1 forces the blind upward-probe regime (D-4). That regime disappears entirely
 if a *true* GPU-time signal exists, since headroom would be directly observable
 even while capped.
 
-**Procedure.** From the plugin, call `vr::IVRCompositor::GetFrameTiming` and log
-`m_flTotalRenderGpuMs`, `m_nNumMisPresented`, `m_nNumDroppedFrames` across a
-cycler sweep. SkyrimVR speaks OpenVR through OpenComposite, so the call exists —
-whether OpenComposite fills it in honestly is the open question.
+**The mechanism is known and proven on this exact stack.** PrimaShock's overlay
+already displays it, and the source shows how: `D3D11_QUERY_TIMESTAMP_DISJOINT`
+plus a start/end `D3D11_QUERY_TIMESTAMP` pair bracketing the frame
+(`d3d11.cpp:777-781`), accumulated into `appGpuTimeUs` (`layer.cpp:2251`).
 
-**Passes if** `m_flTotalRenderGpuMs` varies with preset while capped. If it does,
-D-4 is revised through the Section 0 procedure and the controller becomes
-model-driven in both directions. Do **not** assume it works; E-4 is precisely the
-case of a plausible-looking timing field that measured nothing.
+A GPU timestamp measures GPU **work**, not present-to-present time, so it is
+unaffected by vsync and **does not saturate at the cap**. Observed directly by
+the user on 2026-08-05: FPS pinned at 72 across three presets while the overhead
+figure read 10%, 15% and 30%.
+
+Prefer this over `vr::IVRCompositor::GetFrameTiming`: it does not depend on
+OpenComposite implementing anything honestly, and E-4 is precisely the case of a
+plausible-looking timing field that measured nothing.
+
+**Procedure.** Create the queries on the game's D3D11 device, bracket the frame,
+read back a few frames later to avoid stalling the pipeline, and log the result
+alongside the existing frametime across a cycler sweep.
+
+**Passes if** GPU time varies with preset while frametime is pinned at the cap.
+
+**If it passes, D-4 changes substantially** and must go through the Section 0
+procedure: the censoring that forces the blind upward probe disappears, rising
+becomes model-driven like falling, and `k` can be estimated continuously from
+every frame rather than only at transitions. The probe survives only as a
+fallback for when the query is unavailable.
 
 ### Phase 2 — Model validation, offline
 
