@@ -550,6 +550,43 @@ therefore provisional until Phase 3 replays real traces and re-fits them. **Do
 not tune them in-game to compensate**; that is precisely the trap Phase 3 exists
 to avoid.
 
+### D-10c — Thresholds are absolute milliseconds, and they are in *our* units
+
+E-13's `10% climb / 5% descend` were read off the reference overlay. E-19 shows
+our GPU time runs about 1 ms higher than that overlay's, so those percentages
+cannot be carried across unchanged — 1 ms is 7.2 points of a 13.889 ms budget,
+which is most of the gap between the two thresholds.
+
+**Therefore the controller's thresholds are expressed as absolute milliseconds of
+P95 GPU time**, not as percentages:
+
+```
+climb    when  p95_gpu <  budget - margin_up
+descend  when  p95_gpu >  budget - margin_down
+hold     otherwise
+```
+
+This follows D-3's reasoning for the cost model — a proportional margin is wrong
+when a fixed cost dominates the frame — and it makes the offset a property of one
+number rather than of every comparison.
+
+**Provisional defaults, by translating E-13 through E-19's offset:**
+
+| | reference | +1.0 ms offset | our units |
+|---|---|---|---|
+| climb (their 10%) | ≤ 12.50 ms | | `margin_up = 0.4 ms` |
+| descend (their 5%) | ≥ 13.19 ms | | `margin_down = −0.3 ms` |
+
+Two corrections pull in opposite directions and are deliberately not netted off
+by hand: E-13's figures are **means** while D-10b judges the **P95**, which makes
+climbing harder than the source observation implies; and the offset makes it
+easier. Phase 3 fits both out by replaying recorded traces, which is the only
+place these numbers are allowed to be chosen.
+
+**Until Phase 3 has run, these defaults are placeholders and are not to be
+defended.** They exist so the controller can be exercised, not because they are
+right.
+
 ### D-11 — Fork Community Shaders; do not ship the fork
 
 Measuring GPU time correctly requires brackets around the frame's render work.
@@ -957,7 +994,7 @@ that fails sends us back to Section 4 rather than being worked around.
 | **1** | **Fix the frame sampler.** Thread for timing, one-shot `SKSE::AddTask` per frame, no dedup. | E-11: the bias inverted the ladder. Every number is currently suspect. Independent of everything else and the smallest change. | Capture rate ≈100%; Markarth ladder monotonic on re-run |
 | **2** | **Telemetry (D-12).** Continuous time-aligned log of frametime, preset, transitions, decisions and block reasons — during *free play*, not only during a scripted sweep. | Makes every later step testable without the user narrating, and without staging scenes. | A session is fully reconstructible from artifacts alone |
 | **3** | **Gather cost curves by playing**, not by staging. Walk normally; heavy scenes arrive on their own and telemetry records them. | Re-establishes the cost curves on trustworthy data. | `k` agrees within 15% across comparable segments; residuals < 0.5 ms |
-| **4** ⚠ | **Fork CS at `eb54a72c`**, add the GPU timer, expose `GetLastFrameGpuTimeUs()` at interface revision 4. | The measurement that makes control correct rather than conservative. | **Reopened by E-18.** The signal is uncensored and correlates at 0.948 with the reference, but over-reads by up to 4 ms at low load, which is where the governor needs it. Close boundary moves to the compositor submit (D-13a); done when the join shows sub-millisecond agreement in the 7–9 ms bucket. Formerly: passed on internal evidence: GPU time separates all seven rungs where frametime separates three, and the 2.16 ms gap at UltraPerformance shows the wait is outside the bracket. External cross-check against the overlay's `appGPU` remains, now for offset calibration rather than verdict |
+| **4** ✅ | **Fork CS at `eb54a72c`**, add the GPU timer, expose `GetLastFrameGpuTimeUs()` at interface revision 4. | The measurement that makes control correct rather than conservative. | **Closed 2026-08-06 with a stated residual.** The signal is uncensored (E-17), tracks the reference (E-18), and after D-13a carries a near-constant ~1 ms offset instead of a load-dependent one (E-19). It missed the sub-millisecond bar and is accepted anyway: Phase 3 fits thresholds by replaying our own traces, so it works in our units (D-10c), and the reference's job — proving the signal is real — is done |: GPU time separates all seven rungs where frametime separates three, and the 2.16 ms gap at UltraPerformance shows the wait is outside the bracket. External cross-check against the overlay's `appGPU` remains, now for offset calibration rather than verdict |
 | **5** | **Controller**, tiered: headroom loop (D-10) when GPU time is present, cost model (D-2/D-3) when not. Parameters chosen in CI by replaying recorded traces. | Both tiers must work; the first shipped version runs against unmodified CS. | Phase 3 simulation passes on all captured traces |
 | **6** | **Shadow mode**, then live. | First live run must not also be the first test. | Phase 4 and 5 pass |
 | **7** | **Upstream the CS patch** (D-11a), with this document and the measurements. | Removes the fork from the distribution path entirely. | Patch offered; governor ships against stock CS |
