@@ -162,11 +162,34 @@ public:
 		return std::chrono::duration<double>(std::chrono::steady_clock::now() - _start).count();
 	}
 
+	// Start the capture-ratio window. Called once, when the sweep actually
+	// begins.
+	//
+	// The window must not include the wait for CS to accept changes: on
+	// 2026-08-06 that wait was 80 s of a 333 s session, and counting it as
+	// elapsed reported 76.8% capture for a run that had in fact captured
+	// essentially every frame (574-577 samples per 8 s dwell against ~576
+	// expected). A health metric that cries wolf is worse than none, because
+	// the next real warning gets ignored.
+	void MarkRunStart() noexcept
+	{
+		_runStart = std::chrono::steady_clock::now();
+		_runStartMicros.store(_sampledMicros.load(), std::memory_order_release);
+		_runMarked.store(true, std::memory_order_release);
+	}
+
 	// 1.0 means every frame was seen. Anything much lower invalidates the run.
 	[[nodiscard]] double CaptureRatio() const noexcept
 	{
-		const double elapsed = ElapsedSeconds();
-		return elapsed > 0.0 ? SampledSeconds() / elapsed : 0.0;
+		if (!_runMarked.load(std::memory_order_acquire)) {
+			const double elapsed = ElapsedSeconds();
+			return elapsed > 0.0 ? SampledSeconds() / elapsed : 0.0;
+		}
+		const double elapsed =
+			std::chrono::duration<double>(std::chrono::steady_clock::now() - _runStart).count();
+		const double sampled =
+			static_cast<double>(_sampledMicros.load() - _runStartMicros.load()) / 1.0e6;
+		return elapsed > 0.0 ? sampled / elapsed : 0.0;
 	}
 
 private:
@@ -209,10 +232,13 @@ private:
 	Callback _callback;
 	std::thread _thread;
 	std::chrono::steady_clock::time_point _start{};
+	std::chrono::steady_clock::time_point _runStart{};
 	std::atomic_bool _running{ false };
 	std::atomic_bool _pending{ false };
+	std::atomic_bool _runMarked{ false };
 	std::atomic_uint64_t _frames{ 0 };
 	std::atomic_uint64_t _sampledMicros{ 0 };
+	std::atomic_uint64_t _runStartMicros{ 0 };
 };
 
 // ---------------------------------------------------------------------------
@@ -297,7 +323,12 @@ void OnFrame(double a_now, double a_frameTimeMs)
 		return;
 	}
 
+	const bool wasStarting = g_cycler->State() == CyclerState::Starting;
 	g_cycler->Tick(a_now, a_frameTimeMs);
+	if (wasStarting && g_cycler->State() != CyclerState::Starting) {
+		// The wait for CS is over; start the capture-ratio window here.
+		g_frames.MarkRunStart();
+	}
 
 	// Sample the whole readable API surface at ~2 Hz for the entire run, so
 	// drift in anything other than the preset is visible afterwards without
