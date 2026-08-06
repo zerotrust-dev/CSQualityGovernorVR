@@ -45,7 +45,12 @@ bool Reporter::OpenFrames()
 	if (!_frames) {
 		return false;
 	}
-	_frames << "time_s,frame_ms,preset_public,state,gpu_us,gpu_frame\n";
+	// wall_ms is Unix epoch milliseconds, UTC. It exists so this file can be
+	// joined against another tool's log - specifically OpenXR-Toolkit's
+	// stats CSV, whose rows are local wall-clock with a UTC offset. Elapsed
+	// seconds plus a filename stamp is not enough: the stamp has one-second
+	// resolution, which is ten rows of slop against 100 ms stat windows.
+	_frames << "wall_ms,time_s,frame_ms,preset_public,state,gpu_us,gpu_frame\n";
 	return true;
 }
 
@@ -107,15 +112,16 @@ void Reporter::WriteTransition(const TransitionRecord& a_record)
 	_transitions.flush();  // a crash mid-run must not cost the data already gathered
 }
 
-void Reporter::WriteFrame(double a_time, double a_frameTimeMs, std::uint32_t a_presetPublicValue,
-	std::string_view a_state, std::uint64_t a_gpuTimeUs, std::uint64_t a_gpuFrameIndex)
+void Reporter::WriteFrame(std::uint64_t a_wallMs, double a_time, double a_frameTimeMs,
+	std::uint32_t a_presetPublicValue, std::string_view a_state, std::uint64_t a_gpuTimeUs,
+	std::uint64_t a_gpuFrameIndex)
 {
 	if (!_frames) {
 		return;
 	}
-	_frames << std::fixed << std::setprecision(4) << a_time << ',' << a_frameTimeMs << ','
-			<< a_presetPublicValue << ',' << a_state << ',' << a_gpuTimeUs << ','
-			<< a_gpuFrameIndex << '\n';
+	_frames << a_wallMs << ',' << std::fixed << std::setprecision(4) << a_time << ','
+			<< a_frameTimeMs << ',' << a_presetPublicValue << ',' << a_state << ',' << a_gpuTimeUs
+			<< ',' << a_gpuFrameIndex << '\n';
 }
 
 void Reporter::Finish(const std::vector<TransitionRecord>& a_records, double a_budgetMs)

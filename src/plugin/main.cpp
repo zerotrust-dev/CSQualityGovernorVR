@@ -15,6 +15,15 @@ namespace csgov {
 
 namespace {
 
+// Unix epoch milliseconds, UTC. The join key against other tools' logs.
+std::uint64_t WallClockMs()
+{
+	return static_cast<std::uint64_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::system_clock::now().time_since_epoch())
+			.count());
+}
+
 std::string TimeStamp()
 {
 	const auto now = std::chrono::system_clock::now();
@@ -425,7 +434,7 @@ void OnFrame(double a_now, double a_frameTimeMs)
 	if (g_reporter && a_now - g_lastApiSample >= 0.5) {
 		g_lastApiSample = a_now;
 		const auto snap = ApiSnapshot::Capture(g_CSInterface, g_gpuTiming);
-		g_reporter->WriteApiState(std::format("{:.3f},{},{},{:.3f}", a_now,
+		g_reporter->WriteApiState(std::format("{},{:.3f},{},{},{:.3f}", WallClockMs(), a_now,
 			CyclerStateName(g_cycler->State()), snap.CsvValues(), a_frameTimeMs));
 	}
 
@@ -437,7 +446,7 @@ void OnFrame(double a_now, double a_frameTimeMs)
 
 	const auto info = FindPreset(g_cycler->CurrentTarget());
 	if (g_config.writePerFrameCsv && g_reporter) {
-		g_reporter->WriteFrame(a_now, a_frameTimeMs, info ? info->publicValue : 0,
+		g_reporter->WriteFrame(WallClockMs(), a_now, a_frameTimeMs, info ? info->publicValue : 0,
 			CyclerStateName(g_cycler->State()), gpuUs, gpuFrame);
 	}
 
@@ -485,12 +494,18 @@ void BeginSession()
 	{
 		const ApiSnapshot header{};
 		g_reporter->OpenApiState(
-			std::format("time_s,cycler_state,{},frame_ms", header.CsvHeaderSuffix("api")));
+			std::format("wall_ms,time_s,cycler_state,{},frame_ms", header.CsvHeaderSuffix("api")));
 	}
 
 	g_cycler = std::make_unique<CyclerCore>(g_api, g_config.cycler);
 	g_cycler->SetRecordSink(OnRecord);
 	g_cycler->SetLogSink(OnLog);
+
+	// The transitions CSV carries elapsed seconds only. This line is its anchor
+	// to wall clock, so a transition can be located in another tool's log
+	// without re-deriving the offset from the filename stamp, which is only
+	// accurate to the second.
+	logger::info("clock anchor: wall_ms={} at time_s=0 (UTC epoch milliseconds)", WallClockMs());
 
 	g_frames.Start(OnFrame);
 	g_cycler->Start(0.0);
