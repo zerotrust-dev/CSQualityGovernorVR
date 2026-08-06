@@ -272,13 +272,16 @@ void FinishIfDone()
 	// Below ~0.9 the queue drained less often than once per frame, and every
 	// per-preset number carries a load-dependent sampling bias - the defect that
 	// inverted Quality against Balanced on 2026-08-05.
+	// Percentages are formatted by hand rather than with the "%" presentation
+	// type: fmt v12 rejects it at compile time, and this is the sort of thing
+	// that is not worth a second CI round trip to be clever about.
 	const double ratio = g_frames.CaptureRatio();
-	logger::info("frame source: {} frames, {:.1f}s sampled of {:.1f}s elapsed (capture {:.1%})",
-		g_frames.Frames(), g_frames.SampledSeconds(), g_frames.ElapsedSeconds(), ratio);
+	logger::info("frame source: {} frames, {:.1f}s sampled of {:.1f}s elapsed (capture {:.1f}%)",
+		g_frames.Frames(), g_frames.SampledSeconds(), g_frames.ElapsedSeconds(), ratio * 100.0);
 	if (ratio < 0.9) {
-		logger::error("capture ratio {:.1%} - fewer frames seen than rendered. Per-preset "
+		logger::error("capture ratio {:.1f}% - fewer frames seen than rendered. Per-preset "
 					  "comparisons in this run are biased and should not be trusted.",
-			ratio);
+			ratio * 100.0);
 	}
 
 	if (g_reporter) {
