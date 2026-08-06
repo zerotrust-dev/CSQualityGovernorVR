@@ -101,6 +101,7 @@ future reader can tell measurement from assumption.
 | E-13 | **Observed control thresholds.** ≥10% overhead holds a solid 72; ~5% yields 70–71; 0% drops below. Reported as a stable perceptual rule across many sessions: whenever overhead is displayed at all, turning is smooth. | User observation, 2026-08-05 |
 | E-14 | **The CS VR API exists specifically to be driven by external governors.** The mod page states it "allows external mods like Shizof's VR FPS Stabilizer to dynamically toggle shadows, SSGI, and upscaler quality modes based on performance, weather and location conditions." | Nexus 166950 description, captured from MO2 `meta.ini` |
 | E-15 | Installed baseline identified exactly: **PL3.15 = release RC74 = commit `eb54a72c`**, published 2026-07-09T21:03Z, downloaded 2026-07-09T21:13Z. | MO2 `meta.ini`, GitHub releases API |
+| E-20 | **Independent audit: the end boundary is correct, my explanation of the residual was not.** Repeated `End()` on a timestamp query is documented behaviour (last call wins), so the per-eye re-stamp is sound. But upstream OpenComposite stores each eye and calls `SubmitFrames`→`xrEndFrame` only once **both** are in, so the reference bracket is a *superset* of ours — starting earlier at `xrBeginFrame`, ending later after the second-eye copy. Ours being larger therefore cannot be "the reference misses second-eye work". Independent recomputation: correlation **0.977** restricted to 7–20 ms, **0.995** on stable plateaus, residual +1.30 to +1.48 ms. | External review, 2026-08-06, `deliverables/Independent_VR_GPU_Time_Measurement_Audit.md` |
 | E-19 | **D-13a fixed most of it, and missed its own acceptance bar.** After moving the close to the compositor submit, the excess over the reference fell from +3.95 ms to **+1.65 ms** in the 7–8 ms bucket and our floor dropped 11.5 → **9.17 ms** (reference floor 7.68 ms, i.e. the user's reported 43%). The excess is now near-constant across load — +1.65 at 7–8 ms, +0.79 at 19–20 — where before it swung by 3.1 ms. The stated bar was sub-millisecond in the 7–9 bucket, and it was not met. | Session 2026-08-06 16:19, 279 matched seconds |
 | E-18 | **The bracket is right at the open end and wrong at the close end.** Joined against the toolkit's own `appGPU` log, 382 matched seconds of session 2026-08-06 15:21: **correlation 0.948**, but ours reads **+2.32 ms high** (sd 1.24), and the excess is *load-dependent* — +3.95 ms when their GPU is 7–8 ms, +0.85 ms when it is 15–16. Our reading has a floor near 11.5 ms and never goes below it; theirs reaches 7.41 ms. In headroom terms: ours 5.7%, theirs 22.4%. | `20260806_152146_frames.csv` joined to `stats_20260806_152045.csv` on wall clock |
 | E-17 | **The GPU timer works and the signal is uncensored. D-13 passes.** Session 2026-08-06 14:33, 17 538 frames, 99.4% capture. The four cheapest presets all read 13.84–13.96 ms of frametime — indistinguishable, as E-1 says — while their GPU times read 11.73 / 12.47 / 13.19 / 14.00 ms, cleanly separated and monotonic in pixel count. All seven rungs order correctly within a single sweep. | `20260806_143350_frames.csv` |
@@ -116,11 +117,15 @@ future reader can tell measurement from assumption.
 | 15–16 | 16.29 | 16.60 | +0.85 | +0.95 |
 | 19–20 | — | 19.89 | — | +0.79 |
 
-**The load dependence is essentially gone.** That was the disqualifying property:
-an error that grew as headroom grew could never be calibrated away, because it
-was largest exactly where the decision is made. What remains is a near-constant
-offset of roughly 1 ms, drifting by about 0.35 ms across the working range of
-8–14 ms — around 2.5 percentage points of headroom.
+**The load dependence is much reduced.** That was the disqualifying property: an
+error that grew as headroom grew could never be calibrated away, because it was
+largest exactly where the decision is made. What remains is roughly 1–1.5 ms.
+
+**Correction (E-20): "essentially gone" overstated it.** The independent audit
+points out that the 19–20 ms bucket, which anchors the flat end of that claim,
+holds **three samples**. The low-load end is well supported — the audit
+reproduces +1.56 ms at 7–8 ms and +1.63 at 8–9 — but the shape across the full
+range is not established by this session, and I asserted it as though it were.
 
 **The residual is not the Present fallback.** Frames where our GPU time sits
 within 0.3 ms of frametime — 31.4% of the session, which would be the signature
@@ -731,6 +736,35 @@ rather than assumed.
 from +0.85 to +3.95 ms with load, in the direction that destroys the signal:
 the correction would be largest exactly where the measurement is needed most,
 and it would be fitted to one session in one set of scenes.
+
+### D-13b — The bracket opens where the runtime releases the application
+
+**Refines D-13's open boundary.** Evidence: E-20.
+
+D-13 opened the bracket at the frame's first draw, armed at Present, on the
+reasoning that the compositor wait precedes the first draw. E-20 removes the
+explanation that let the residual be blamed elsewhere, and leaves the start as
+the outstanding suspect: **if the game issues any draw before `WaitGetPoses`
+returns, the bracket opens ahead of the pacing block** and counts the wait as
+work. That is precisely how a nominally narrower bracket ends up longer than a
+wider one.
+
+`IVRCompositor::WaitGetPoses` is where the runtime releases the application, and
+its return is this stack's `xrBeginFrame` — the reference's own start. The timer
+therefore moves its start timestamp forward when that call returns with the
+bracket already open, using the same documented last-`End`-wins rule that lets
+the close move per eye.
+
+**It counts how often that happens and logs the share.** "The game never draws
+before WaitGetPoses" is a claim, and this is the number that settles it. If the
+count is ~0 the start was never the problem and the residual lies elsewhere; if
+it is high, this change should move the measurement.
+
+**The acceptance test changes with it**, per the audit's recommendation and
+D-10c: the reference is a sanity check on shape and scale, not an equality
+oracle, because its bracket, its statistic and its aggregation all differ from
+ours. What must hold is that the residual stops depending on load. Exact
+equality was never the requirement, and setting it as one was my error.
 
 **Why not CS's existing profiler.** Community Shaders already contains
 `src/Profiler.cpp`, which does D3D11 timestamp queries properly. It was not

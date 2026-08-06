@@ -105,6 +105,30 @@ method, and the method was wrong. A large disagreement with a direct observation
 is never resolved by trusting the summary statistic — go back to the per-frame
 distribution first. It was in the same file, and it agreed with the player.
 
+**8. Deduplicate by measurement identity before computing statistics.**
+
+The per-frame CSV records the most recently *published* GPU time, so a frame
+whose query had not completed carries the previous frame's value. In the
+2026-08-06 capture that was 153 of 21,019 rows — 0.73%. Small, but it weights a
+measurement by how long it stayed published rather than by how often it
+occurred.
+
+Group by `gpu_frame` before averaging. The same applies to any signal that is
+published asynchronously and sampled synchronously, which is most of them.
+
+**9. Another tool's log is not a matching window.**
+
+The reference overlay accumulates over ~1 s, writes the row when the window
+closes, and formats the timestamp to whole seconds. Bucketing our per-frame rows
+by floored wall-clock second therefore compares *overlapping but not identical*
+windows. On a stable plateau this does not matter — a shifted window over a flat
+signal gives the same answer, and correlation there reaches 0.995. During a
+transition it matters a great deal, and sub-millisecond claims taken across
+those seconds are not supported by the data.
+
+Restrict comparisons to stable stretches, or accept that the residual you are
+measuring includes the alignment error.
+
 ## Phase 1 Logging Contract
 
 The cycler should record per transition, without opening any menu:
