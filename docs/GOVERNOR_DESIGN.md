@@ -101,14 +101,62 @@ future reader can tell measurement from assumption.
 | E-13 | **Observed control thresholds.** ≥10% overhead holds a solid 72; ~5% yields 70–71; 0% drops below. Reported as a stable perceptual rule across many sessions: whenever overhead is displayed at all, turning is smooth. | User observation, 2026-08-05 |
 | E-14 | **The CS VR API exists specifically to be driven by external governors.** The mod page states it "allows external mods like Shizof's VR FPS Stabilizer to dynamically toggle shadows, SSGI, and upscaler quality modes based on performance, weather and location conditions." | Nexus 166950 description, captured from MO2 `meta.ini` |
 | E-15 | Installed baseline identified exactly: **PL3.15 = release RC74 = commit `eb54a72c`**, published 2026-07-09T21:03Z, downloaded 2026-07-09T21:13Z. | MO2 `meta.ini`, GitHub releases API |
+| E-17 | **The GPU timer works and the signal is uncensored. D-13 passes.** Session 2026-08-06 14:33, 17 538 frames, 99.4% capture. The four cheapest presets all read 13.84–13.96 ms of frametime — indistinguishable, as E-1 says — while their GPU times read 11.73 / 12.47 / 13.19 / 14.00 ms, cleanly separated and monotonic in pixel count. All seven rungs order correctly within a single sweep. | `20260806_143350_frames.csv` |
 | E-16 | **The overlay's headroom is `(budget − appGpuTimeUs) / budget`, and it logs itself to disk.** Source: `headroomTime = (1000000/targetFps) − time; headroomPercent = (headroomTime/10)/frameTimeMs` — algebraically identical to ours. Four qualifiers came with it, below. | OpenXR-Toolkit 1.3.2 `menu.cpp:918-947`, `layer.cpp:2251/2344-2346/2569`; live registry and stats CSV on this machine, 2026-08-06 |
+
+### E-17 in detail — the measurement that closes roadmap step 4
+
+| preset | scale | frametime (ms) | **GPU (ms)** | GPU P95 | headroom P95 |
+|---|---:|---:|---:|---:|---:|
+| UltraPerformance | 0.333 | 13.89 | **11.73** | 12.92 | +7.0% |
+| Performance | 0.500 | 13.96 | **12.47** | 13.70 | +1.4% |
+| Balanced | 0.588 | 13.85 | **13.19** | 14.02 | −1.0% |
+| Quality | 0.667 | 13.84 | **14.00** | 14.76 | −6.3% |
+| UltraQuality | 0.769 | 14.61 | **14.61** | 15.70 | −13.0% |
+| Hoshipa | 0.850 | 15.71 | **15.73** | 17.38 | −25.2% |
+| NativeAA | 1.000 | 16.24 | **16.24** | 19.84 | −42.9% |
+
+**The bracket excludes the wait, and this table proves it without reference to
+any other tool.** That was the one thing D-13 could get wrong, and the test for
+it is internal: if the bracket had enclosed the compositor wait, GPU time would
+equal frametime at *every* preset. It does at the expensive end — 16.24 = 16.24,
+a genuinely GPU-bound frame with no idle to exclude — but at UltraPerformance it
+reads 11.73 against a frametime of 13.89. That 2.16 ms gap is the wait, sitting
+outside the bracket where D-13 put it.
+
+Read the two halves of the table together: **frametime separates only the three
+rungs that miss the cap; GPU time separates all seven.** The bottom four are the
+entire problem this project exists to solve, and they are now distinguishable.
+
+Two further results fall out:
+
+- **The E-11 inversion is gone.** Quality no longer measures faster than
+  Balanced. All seven rungs order by pixel count, within a single sweep as well
+  as in aggregate, so it is not an averaging artefact.
+- **`gpu frames 73 of 73 (0 repeated)`** — every frame produced a fresh reading.
+  The multi-buffered readback never fell behind and never stalled.
+
+**What is still outstanding** is the external cross-check against the overlay's
+own `appGPU` column. It is now corroboration rather than the verdict, and it
+serves a different purpose: calibrating the constant offset between the two
+brackets (ours ends before `Present`, theirs at `xrEndFrame`).
 
 ### E-16 in detail — the reference signal, and its four qualifiers
 
-The overlay we have been reading is **OpenXR-Toolkit 1.3.2** (`XR_APILAYER_MBUCCHIA_toolkit`,
-the only implicit OpenXR layer registered on this machine; its log records
+The overlay we have been reading is `XR_APILAYER_MBUCCHIA_toolkit`, the only
+implicit OpenXR layer registered on this machine; its log records
 `Application name: 'OpenComposite_SkyrimVR'`, `Pimax OpenXR`, `Pimax Crystal
-Super`). Its settings live in the registry under
+Super`.
+
+**Caveat on the source reading.** The installed binary announces itself as
+`OpenXR Toolkit - Primashock combo (v1.4.0)`, while the source we have on disk
+is vanilla OpenXR-Toolkit **1.3.2**. Everything below is read from 1.3.2 and is
+very likely unchanged, but it is not verified against the binary in use — and
+one behaviour demonstrably differs: setting `record_stats = 1` in the registry
+before launch did **not** produce a stats CSV on the combo build, though the
+same key is present and two CSVs from earlier sessions exist. Enable it from the
+in-headset menu instead (CTRL+ALT+Down → "Record statistics to file"), which is
+the path known to have worked. Its settings live in the registry under
 `HKCU\SOFTWARE\OpenXR_Toolkit\OpenComposite_SkyrimVR`, and reading them settles
 several things that were previously assumed:
 
@@ -782,7 +830,7 @@ that fails sends us back to Section 4 rather than being worked around.
 | **1** | **Fix the frame sampler.** Thread for timing, one-shot `SKSE::AddTask` per frame, no dedup. | E-11: the bias inverted the ladder. Every number is currently suspect. Independent of everything else and the smallest change. | Capture rate ≈100%; Markarth ladder monotonic on re-run |
 | **2** | **Telemetry (D-12).** Continuous time-aligned log of frametime, preset, transitions, decisions and block reasons — during *free play*, not only during a scripted sweep. | Makes every later step testable without the user narrating, and without staging scenes. | A session is fully reconstructible from artifacts alone |
 | **3** | **Gather cost curves by playing**, not by staging. Walk normally; heavy scenes arrive on their own and telemetry records them. | Re-establishes the cost curves on trustworthy data. | `k` agrees within 15% across comparable segments; residuals < 0.5 ms |
-| **4** | **Fork CS at `eb54a72c`**, add the GPU timer, expose `GetLastFrameGpuTimeUs()` at interface revision 4. | The measurement that makes control correct rather than conservative. | Our GPU time tracks PrimaShock's overlay across a sweep |
+| **4** ✅ | **Fork CS at `eb54a72c`**, add the GPU timer, expose `GetLastFrameGpuTimeUs()` at interface revision 4. | The measurement that makes control correct rather than conservative. | **Done 2026-08-06 (E-17).** Passed on internal evidence: GPU time separates all seven rungs where frametime separates three, and the 2.16 ms gap at UltraPerformance shows the wait is outside the bracket. External cross-check against the overlay's `appGPU` remains, now for offset calibration rather than verdict |
 | **5** | **Controller**, tiered: headroom loop (D-10) when GPU time is present, cost model (D-2/D-3) when not. Parameters chosen in CI by replaying recorded traces. | Both tiers must work; the first shipped version runs against unmodified CS. | Phase 3 simulation passes on all captured traces |
 | **6** | **Shadow mode**, then live. | First live run must not also be the first test. | Phase 4 and 5 pass |
 | **7** | **Upstream the CS patch** (D-11a), with this document and the measurements. | Removes the fork from the distribution path entirely. | Patch offered; governor ships against stock CS |
@@ -840,7 +888,7 @@ includes questions about somebody else's instrument.
 
 | # | Question | Resolved by |
 |---|---|---|
-| Q-1 | Is a true GPU-time signal available? | Phase 1b |
+| Q-1 | Is a true GPU-time signal available? | **Answered 2026-08-06: yes.** GPU time separates all seven rungs while frametime separates only three (E-17). Phase 1b passes |
 | Q-2 | Do the rungs separate under real load? | **Answered 2026-08-04: yes, decisively** — 13.57 → 25.63 ms across the ladder under load (E-7) |
 | Q-3 | Is `t = t_fixed + t_scaled·f` accurate enough? | **Answered 2026-08-04: yes** (E-7) |
 | Q-4 | Why did `LoadingMenu` block a whole session once? | **Answered 2026-08-04**: it blocks for >30 s after every load (E-9). `StartDelaySeconds` raised 20 → 45 |
@@ -857,6 +905,25 @@ available (E-6).
 ---
 
 ## Decision Log
+
+**2026-08-06 — D-13 holds; the signal is uncensored (E-17). Roadmap step 4 closes.**
+
+First run against the forked Community Shaders. GPU time separates all seven
+presets, monotonically in pixel count and within a single sweep, over a range
+where frametime reads 13.84–13.96 ms for four of them. Q-1 is answered and
+Phase 1b passes.
+
+The bracket question settled itself internally, which was not the plan: the
+acceptance test was to be a comparison against the overlay. It was not needed,
+because enclosing the wait would force GPU time to equal frametime at *every*
+preset, and at UltraPerformance the two differ by 2.16 ms. The comparison is
+still worth doing — it calibrates the offset between the two brackets — but it
+is corroboration now, not the verdict.
+
+What this does not yet tell us: whether the thresholds are right. In this
+session only UltraPerformance had positive P95 headroom (+7.0%); everything
+above it was already over budget. That is one scene during ordinary play, and
+D-10a's numbers stay provisional until Phase 3 (Q-8, Q-9).
 
 **2026-08-06 — The reference signal is readable from disk (E-16); the last
 "unavoidable" manual step was not unavoidable.**
