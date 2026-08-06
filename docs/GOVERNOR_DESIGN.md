@@ -101,8 +101,47 @@ future reader can tell measurement from assumption.
 | E-13 | **Observed control thresholds.** ≥10% overhead holds a solid 72; ~5% yields 70–71; 0% drops below. Reported as a stable perceptual rule across many sessions: whenever overhead is displayed at all, turning is smooth. | User observation, 2026-08-05 |
 | E-14 | **The CS VR API exists specifically to be driven by external governors.** The mod page states it "allows external mods like Shizof's VR FPS Stabilizer to dynamically toggle shadows, SSGI, and upscaler quality modes based on performance, weather and location conditions." | Nexus 166950 description, captured from MO2 `meta.ini` |
 | E-15 | Installed baseline identified exactly: **PL3.15 = release RC74 = commit `eb54a72c`**, published 2026-07-09T21:03Z, downloaded 2026-07-09T21:13Z. | MO2 `meta.ini`, GitHub releases API |
+| E-18 | **The bracket is right at the open end and wrong at the close end.** Joined against the toolkit's own `appGPU` log, 382 matched seconds of session 2026-08-06 15:21: **correlation 0.948**, but ours reads **+2.32 ms high** (sd 1.24), and the excess is *load-dependent* — +3.95 ms when their GPU is 7–8 ms, +0.85 ms when it is 15–16. Our reading has a floor near 11.5 ms and never goes below it; theirs reaches 7.41 ms. In headroom terms: ours 5.7%, theirs 22.4%. | `20260806_152146_frames.csv` joined to `stats_20260806_152045.csv` on wall clock |
 | E-17 | **The GPU timer works and the signal is uncensored. D-13 passes.** Session 2026-08-06 14:33, 17 538 frames, 99.4% capture. The four cheapest presets all read 13.84–13.96 ms of frametime — indistinguishable, as E-1 says — while their GPU times read 11.73 / 12.47 / 13.19 / 14.00 ms, cleanly separated and monotonic in pixel count. All seven rungs order correctly within a single sweep. | `20260806_143350_frames.csv` |
 | E-16 | **The overlay's headroom is `(budget − appGpuTimeUs) / budget`, and it logs itself to disk.** Source: `headroomTime = (1000000/targetFps) − time; headroomPercent = (headroomTime/10)/frameTimeMs` — algebraically identical to ours. Four qualifiers came with it, below. | OpenXR-Toolkit 1.3.2 `menu.cpp:918-947`, `layer.cpp:2251/2344-2346/2569`; live registry and stats CSV on this machine, 2026-08-06 |
+
+### E-18 in detail — the close boundary is in the wrong place
+
+The external comparison was run, and it found what internal evidence could not.
+
+| their GPU | ours | frametime | excess |
+|---:|---:|---:|---:|
+| 7.77 ms | 11.72 | 13.96 | **+3.95** |
+| 8.44 | 11.55 | 13.96 | +3.11 |
+| 9.59 | 12.01 | 14.45 | +2.42 |
+| 11.44 | 13.17 | 13.88 | +1.73 |
+| 12.44 | 13.79 | 13.86 | +1.34 |
+| 15.43 | 16.29 | 16.25 | +0.85 |
+| 17.53 | 18.57 | 18.53 | +1.04 |
+
+**Correlation 0.948.** The two instruments are measuring the same thing, so D-13's
+open boundary is sound and E-17's conclusion — the signal is uncensored — stands.
+
+**But the excess is not a constant offset, and it is worst exactly where it
+hurts.** When the GPU is saturated the two agree to within a millisecond; when
+there is real headroom, ours over-reads by up to 4 ms. Our value has a floor
+around 11.5 ms and cannot go below it, while theirs reaches 7.41 ms. That is
+17 percentage points of headroom at a 13.889 ms budget — the difference between
+"descend, we are out of budget" and "climb, a fifth of the frame is spare".
+
+**This is the D-13 caveat, which was written down as "conservative" and turns out
+to be disqualifying.** The reasoning there was that idle inside the bracket makes
+the reading an upper bound, erring toward less apparent headroom. True — but a
+governor whose headroom signal saturates at ~2 ms of apparent spare capacity
+cannot climb, and would strip quality in exactly the scenes that could afford
+more. Conservative in the wrong place is not safe, it is useless.
+
+**Where the excess comes from.** The toolkit stops its timer at `xrEndFrame`,
+i.e. when the application hands the frame to the compositor. Ours runs on to
+`Present`. Between those two points sits the game's submit to the compositor,
+where frame pacing blocks the CPU while the GPU has nothing left to do — and a
+timestamp delta counts that idle. When the GPU is saturated there is no idle to
+count and the two agree, which is exactly the shape of the table.
 
 ### E-17 in detail — the measurement that closes roadmap step 4
 
@@ -584,6 +623,47 @@ headroom than it does, never more. D-6 already covers the CPU-bound case.
 frame, and a frame whose set is still in flight is simply not timed. Results
 with the disjoint flag set are discarded, per the D3D11 contract.
 
+### D-13a — Close the bracket at the submit to the compositor, not at Present
+
+**Supersedes the close boundary in D-13.** Evidence: E-18.
+
+D-13 chose `Present` because everything the application submits is enclosed by
+it and the vsync wait is not. The first half is right; the second is not. In
+this stack the pacing block sits at the game's **submit to the compositor**,
+which happens *before* `Present`, so the wait was inside the bracket after all —
+just at the other end from the one being guarded.
+
+```
+first draw ────────────── render work ──────────────┐
+                                                    │  ← close here (submit)
+                        compositor submit / pacing block   ← was inside, must be out
+                                                    │
+                                                 Present   ← old close boundary
+```
+
+**New close boundary:** the game's compositor submit, reached through the
+`BSOpenVR` vtable — the same object CS already hooks at slot `0x12` for
+`GetRenderTargetSize`, so the mechanism is proven in-repo and needs no new
+dependency.
+
+**Open boundary is unchanged.** E-18's correlation of 0.948 says it is right.
+
+**Acceptance is the same test, repeated.** Re-run the join. Success is the
+excess falling to well under a millisecond *at low GPU load* — the high-load end
+already agrees and proves nothing. Anything that only improves the mean while
+leaving the 7–8 ms bucket over-reading by 3 ms has not fixed this.
+
+**If the submit hook proves unreliable**, the fallback is to bracket only what
+Community Shaders itself can see — first draw to the end of CS's final
+present-stage pass — and re-measure. That under-counts by whatever the game
+draws afterwards, which is the opposite error and equally must be measured
+rather than assumed.
+
+**Why not simply subtract the offset.** Because it is not an offset. It varies
+from +0.85 to +3.95 ms with load, in the direction that destroys the signal:
+the correction would be largest exactly where the measurement is needed most,
+and it would be fitted to one session in one set of scenes.
+
 **Why not CS's existing profiler.** Community Shaders already contains
 `src/Profiler.cpp`, which does D3D11 timestamp queries properly. It was not
 reused, and an upstream reviewer will reasonably ask why:
@@ -846,7 +926,7 @@ that fails sends us back to Section 4 rather than being worked around.
 | **1** | **Fix the frame sampler.** Thread for timing, one-shot `SKSE::AddTask` per frame, no dedup. | E-11: the bias inverted the ladder. Every number is currently suspect. Independent of everything else and the smallest change. | Capture rate ≈100%; Markarth ladder monotonic on re-run |
 | **2** | **Telemetry (D-12).** Continuous time-aligned log of frametime, preset, transitions, decisions and block reasons — during *free play*, not only during a scripted sweep. | Makes every later step testable without the user narrating, and without staging scenes. | A session is fully reconstructible from artifacts alone |
 | **3** | **Gather cost curves by playing**, not by staging. Walk normally; heavy scenes arrive on their own and telemetry records them. | Re-establishes the cost curves on trustworthy data. | `k` agrees within 15% across comparable segments; residuals < 0.5 ms |
-| **4** ✅ | **Fork CS at `eb54a72c`**, add the GPU timer, expose `GetLastFrameGpuTimeUs()` at interface revision 4. | The measurement that makes control correct rather than conservative. | **Done 2026-08-06 (E-17).** Passed on internal evidence: GPU time separates all seven rungs where frametime separates three, and the 2.16 ms gap at UltraPerformance shows the wait is outside the bracket. External cross-check against the overlay's `appGPU` remains, now for offset calibration rather than verdict |
+| **4** ⚠ | **Fork CS at `eb54a72c`**, add the GPU timer, expose `GetLastFrameGpuTimeUs()` at interface revision 4. | The measurement that makes control correct rather than conservative. | **Reopened by E-18.** The signal is uncensored and correlates at 0.948 with the reference, but over-reads by up to 4 ms at low load, which is where the governor needs it. Close boundary moves to the compositor submit (D-13a); done when the join shows sub-millisecond agreement in the 7–9 ms bucket. Formerly: passed on internal evidence: GPU time separates all seven rungs where frametime separates three, and the 2.16 ms gap at UltraPerformance shows the wait is outside the bracket. External cross-check against the overlay's `appGPU` remains, now for offset calibration rather than verdict |
 | **5** | **Controller**, tiered: headroom loop (D-10) when GPU time is present, cost model (D-2/D-3) when not. Parameters chosen in CI by replaying recorded traces. | Both tiers must work; the first shipped version runs against unmodified CS. | Phase 3 simulation passes on all captured traces |
 | **6** | **Shadow mode**, then live. | First live run must not also be the first test. | Phase 4 and 5 pass |
 | **7** | **Upstream the CS patch** (D-11a), with this document and the measurements. | Removes the fork from the distribution path entirely. | Patch offered; governor ships against stock CS |
@@ -921,6 +1001,33 @@ available (E-6).
 ---
 
 ## Decision Log
+
+**2026-08-06 (later) — The external comparison found what internal evidence
+could not (E-18). Close boundary moves to the compositor submit (D-13a); step 4
+reopens.**
+
+Joined against the toolkit's own log — 382 matched seconds, correlation 0.948 —
+our GPU time reads high by +2.32 ms on average, and the excess scales with
+*available headroom*: +3.95 ms when true GPU work is 7–8 ms, +0.85 ms when it is
+15–16. Our reading cannot go below ~11.5 ms; theirs reaches 7.41. As headroom,
+ours 5.7% against theirs 22.4%.
+
+The cause is the close boundary. The pacing block sits at the game's submit to
+the compositor, before `Present`, so the wait D-13 was written to exclude was
+inside the bracket at the other end. D-13's open boundary is vindicated by the
+correlation; its close boundary is superseded.
+
+Two lessons worth keeping. First, the internal argument for D-13 was sound and
+insufficient: "GPU time differs from frametime at the cheap presets" ruled out
+the whole wait being enclosed, and said nothing about *part* of it being
+enclosed. Second, the caveat in D-13 called this error "conservative" and
+therefore acceptable. It is not: a headroom signal that saturates at ~2 ms of
+apparent spare capacity cannot climb, and would strip quality precisely in the
+scenes that could afford more.
+
+The user's report of 34–39% overhead, against our best reading of 7%, is what
+prompted the check. Repeatedly now, the direct observation has been right and
+the derived number wrong.
 
 **2026-08-06 — D-13 holds; the signal is uncensored (E-17). Roadmap step 4 closes.**
 
