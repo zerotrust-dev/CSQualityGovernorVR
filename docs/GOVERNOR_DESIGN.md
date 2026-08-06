@@ -136,10 +136,26 @@ Two further results fall out:
 - **`gpu frames 73 of 73 (0 repeated)`** — every frame produced a fresh reading.
   The multi-buffered readback never fell behind and never stalled.
 
+**Read the levels in that table as rankings only.** The session was ordinary
+play, not a stationary capture, so each preset's average blends whatever the
+player walked through during its four visits. The ordering is evidence; the
+headroom percentages are not a statement about any scene. Rule 7 in
+`MEASUREMENT_METHOD.md` exists because that distinction was got wrong here
+first — an aggregate showing +7.0% at best was set against the player's direct
+observation of 34%, and the aggregate was believed. The same file's per-frame
+minimum was 9.63 ms, i.e. 30.7%, which agreed with the player all along.
+
 **What is still outstanding** is the external cross-check against the overlay's
-own `appGPU` column. It is now corroboration rather than the verdict, and it
-serves a different purpose: calibrating the constant offset between the two
-brackets (ours ends before `Present`, theirs at `xrEndFrame`).
+own `appGPU` column. It is corroboration for the bracket placement, but for the
+*magnitude* it is the only check there is: nothing internal can show whether our
+GPU time is the same quantity as theirs, and an inflated reading would make the
+governor strip quality believing there is no headroom when there is 34%. The
+comparison also calibrates the constant offset between the two brackets (ours
+ends before `Present`, theirs at `xrEndFrame`).
+
+It could not be done from the 2026-08-06 capture, because that capture stopped
+when the sweep did — 4m38s of a much longer session, with every later
+observation unrecorded. Monitor mode fixes that.
 
 ### E-16 in detail — the reference signal, and its four qualifiers
 

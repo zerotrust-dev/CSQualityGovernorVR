@@ -57,6 +57,54 @@ The same rule ended the PrimaShock-VRS-versus-CS-foveation question, and it
 applies to the governor: it must be the **only** thing changing the upscale
 preset while it is running.
 
+**7. A per-preset average taken while the player is moving is not a measurement
+of the scene. It is a measurement of nothing.**
+
+This one cost a wrong conclusion on 2026-08-06, stated confidently, in writing,
+from good data.
+
+The cycler visited each preset four times over 4m38s while the player walked
+around normally. Averaging every visit to a preset produced this, which looks
+authoritative:
+
+| preset | GPU (ms) | headroom P95 |
+|---|---:|---:|
+| UltraPerformance | 11.73 | +7.0% |
+| Performance | 12.47 | +1.4% |
+| Balanced | 13.19 | −1.0% |
+| … | … | … |
+
+The conclusion drawn was "the scene was heavy — only the cheapest preset has any
+headroom". **Both halves of that sentence are wrong.**
+
+There was no "the scene". The session moved through light and heavy areas, and
+each preset's average is a blend of wherever the player happened to be during
+its four visits. The player's own account — "lots of 70–74 fps, up to 34%
+overhead, also some 56 and 60 fps" — was accurate, and the same file confirms
+it: 61.5% of frames ran at ≥70 fps, 7.6% below 60, and the per-frame **minimum**
+GPU time was 9.63 ms, i.e. 30.7% headroom. The averages hid every bit of that.
+
+**Why it survives the ranking but destroys the levels.** Interleaving presets
+rapidly and reversing alternate sweeps is designed to cancel scene drift, and it
+works: the *ordering* was monotonic in pixel count, within single sweeps as well
+as in aggregate (E-17). What that machinery cannot do is make an average
+meaningful as a statement about a place. Ordering survives; levels do not.
+
+So:
+
+- A per-preset **ranking** from a moving session is evidence.
+- A per-preset **level** — "this scene costs 13.19 ms", "there is 1.4% headroom
+  here" — requires a stationary scene and a named hard save (Phase 1), or it
+  requires not being said at all.
+- When a headroom or cost number is quoted, the scene it belongs to must be
+  quoted with it. If that cannot be named, the number is not about a scene.
+
+**The tell that was ignored.** The player reported 34% headroom; the aggregate
+said the best case was 7%. That contradiction was the data disagreeing with the
+method, and the method was wrong. A large disagreement with a direct observation
+is never resolved by trusting the summary statistic — go back to the per-frame
+distribution first. It was in the same file, and it agreed with the player.
+
 ## Phase 1 Logging Contract
 
 The cycler should record per transition, without opening any menu:
