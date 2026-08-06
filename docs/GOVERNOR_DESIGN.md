@@ -101,9 +101,40 @@ future reader can tell measurement from assumption.
 | E-13 | **Observed control thresholds.** ≥10% overhead holds a solid 72; ~5% yields 70–71; 0% drops below. Reported as a stable perceptual rule across many sessions: whenever overhead is displayed at all, turning is smooth. | User observation, 2026-08-05 |
 | E-14 | **The CS VR API exists specifically to be driven by external governors.** The mod page states it "allows external mods like Shizof's VR FPS Stabilizer to dynamically toggle shadows, SSGI, and upscaler quality modes based on performance, weather and location conditions." | Nexus 166950 description, captured from MO2 `meta.ini` |
 | E-15 | Installed baseline identified exactly: **PL3.15 = release RC74 = commit `eb54a72c`**, published 2026-07-09T21:03Z, downloaded 2026-07-09T21:13Z. | MO2 `meta.ini`, GitHub releases API |
+| E-19 | **D-13a fixed most of it, and missed its own acceptance bar.** After moving the close to the compositor submit, the excess over the reference fell from +3.95 ms to **+1.65 ms** in the 7–8 ms bucket and our floor dropped 11.5 → **9.17 ms** (reference floor 7.68 ms, i.e. the user's reported 43%). The excess is now near-constant across load — +1.65 at 7–8 ms, +0.79 at 19–20 — where before it swung by 3.1 ms. The stated bar was sub-millisecond in the 7–9 bucket, and it was not met. | Session 2026-08-06 16:19, 279 matched seconds |
 | E-18 | **The bracket is right at the open end and wrong at the close end.** Joined against the toolkit's own `appGPU` log, 382 matched seconds of session 2026-08-06 15:21: **correlation 0.948**, but ours reads **+2.32 ms high** (sd 1.24), and the excess is *load-dependent* — +3.95 ms when their GPU is 7–8 ms, +0.85 ms when it is 15–16. Our reading has a floor near 11.5 ms and never goes below it; theirs reaches 7.41 ms. In headroom terms: ours 5.7%, theirs 22.4%. | `20260806_152146_frames.csv` joined to `stats_20260806_152045.csv` on wall clock |
 | E-17 | **The GPU timer works and the signal is uncensored. D-13 passes.** Session 2026-08-06 14:33, 17 538 frames, 99.4% capture. The four cheapest presets all read 13.84–13.96 ms of frametime — indistinguishable, as E-1 says — while their GPU times read 11.73 / 12.47 / 13.19 / 14.00 ms, cleanly separated and monotonic in pixel count. All seven rungs order correctly within a single sweep. | `20260806_143350_frames.csv` |
 | E-16 | **The overlay's headroom is `(budget − appGpuTimeUs) / budget`, and it logs itself to disk.** Source: `headroomTime = (1000000/targetFps) − time; headroomPercent = (headroomTime/10)/frameTimeMs` — algebraically identical to ours. Four qualifiers came with it, below. | OpenXR-Toolkit 1.3.2 `menu.cpp:918-947`, `layer.cpp:2251/2344-2346/2569`; live registry and stats CSV on this machine, 2026-08-06 |
+
+### E-19 in detail — after D-13a, and what the residual is not
+
+| their GPU | ours before | ours after | excess before | excess after |
+|---:|---:|---:|---:|---:|
+| 7–8 ms | 11.72 | 9.50 | +3.95 | **+1.65** |
+| 9–10 | 12.01 | 11.09 | +2.42 | +1.75 |
+| 12–13 | 13.79 | 13.66 | +1.34 | +1.13 |
+| 15–16 | 16.29 | 16.60 | +0.85 | +0.95 |
+| 19–20 | — | 19.89 | — | +0.79 |
+
+**The load dependence is essentially gone.** That was the disqualifying property:
+an error that grew as headroom grew could never be calibrated away, because it
+was largest exactly where the decision is made. What remains is a near-constant
+offset of roughly 1 ms, drifting by about 0.35 ms across the working range of
+8–14 ms — around 2.5 percentage points of headroom.
+
+**The residual is not the Present fallback.** Frames where our GPU time sits
+within 0.3 ms of frametime — 31.4% of the session, which would be the signature
+of a frame that never reached the compositor — occur **only** where the reference
+also reports high load: 0% of them below 11 ms, 59% at 12–13 ms. They are
+genuinely GPU-bound frames, where GPU time legitimately approaches frametime.
+The two suppression paths in the submit hook fire on device loss and relatch
+only, and log once each.
+
+**Correlation fell from 0.948 to 0.800** between the two sessions. Not a
+regression in the instrument: the reference aggregates over its own one-second
+windows, which are not aligned to the wall-clock seconds we bucket into, so a
+session with faster-changing load correlates worse for reasons that have nothing
+to do with either measurement.
 
 ### E-18 in detail — the close boundary is in the wrong place
 
