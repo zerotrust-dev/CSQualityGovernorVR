@@ -19,6 +19,7 @@ add_library(csgov_core STATIC
     src/core/Presets.cpp
     src/core/Stats.cpp
     src/core/CyclerCore.cpp
+    src/core/GovernorCore.cpp
 )
 
 target_include_directories(csgov_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)

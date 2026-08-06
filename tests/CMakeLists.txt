@@ -14,6 +14,7 @@ add_executable(csgov_tests
     test_presets.cpp
     test_stats.cpp
     test_cycler.cpp
+    test_governor.cpp
 )
 
 target_link_libraries(csgov_tests PRIVATE csgov_core Catch2::Catch2WithMain)
