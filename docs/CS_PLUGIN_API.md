@@ -7,9 +7,24 @@ Source: `include/VRAPI/CSinterface001.h` in
 GPL-3.0). This is the fork installed by MGO 4.0 as
 *Community Shaders - Particle Lights Fork*.
 
-**This is the file the governor is built against.** No fork of CS is needed and
-no upstream contribution is required — CS publishes a versioned, ABI-stable
-inter-plugin API for exactly this.
+**This is the file the governor is built against.** For everything the governor
+*actuates*, no fork of CS is needed and no upstream contribution is required —
+CS publishes a versioned, ABI-stable inter-plugin API for exactly this.
+
+**One exception, added 2026-08-06: revision 4.** The API has no way to report GPU
+time, and nothing outside CS can measure it honestly (design doc D-11, D-13), so
+revision 4 — `GetLastFrameGpuTimeUs()` and `GetLastFrameGpuTimeFrameIndex()` —
+is *our own* extension, carried in
+`zerotrust-dev/skyrim-community-shaders`, branch `feat/expose-gpu-time-pl3.15`,
+and destined for upstream. It exists only in builds from that fork.
+
+Consequences for anyone reading this code:
+
+- Revision 4 methods **must** be gated on both the acquired revision and
+  `getBuildNumber() >= 9`, via `GpuTimingAvailable()`. A stock provider's vtable
+  ends before those slots; calling one is not a graceful failure.
+- The governor must work with no GPU time at all (D-10). The frametime tier is
+  not a stub — it is what runs against stock Community Shaders.
 
 ## Acquiring The Interface
 
@@ -17,7 +32,7 @@ inter-plugin API for exactly this.
 namespace CSPluginAPI {
     constexpr const auto CSPluginName = "CommunityShaders";
     inline constexpr uint32_t CSInterfaceMessageType = 0x43534150;  // "CSAP"
-    inline constexpr unsigned int CSInterfaceRevision = 3;          // current
+    inline constexpr unsigned int CSInterfaceRevision = 4;          // 4 = our fork; 3 = stock
 
     struct CSMessage {
         enum : uint32_t { kMessage_GetInterface = CSInterfaceMessageType };
@@ -32,7 +47,10 @@ extern CSPluginAPI::ICSInterface001* g_CSInterface;
 
 ABI contract: *"keep virtual methods append-only. Inserting new virtuals before
 existing entries changes vtable slots for already-compiled consumers."* Revisions
-1, 2 and 3 exist; request the revision you compiled against.
+1, 2 and 3 exist upstream, and revision 4 exists in our fork; request the newest
+and negotiate downwards, which is what `main.cpp` does — asking only for the
+newest and giving up would report "CS unavailable" on a provider that would have
+answered revision 3 perfectly well.
 
 ## THE ENUM TABLE — Read This Before Writing Any Value
 
@@ -127,6 +145,10 @@ struct ICSInterface001
     // Revision 3 — written for external controllers
     virtual uint32_t GetVRUpscalingApplyBlockReasons() = 0;
     virtual bool     IsVRUpscalingProfileApplyAllowed() = 0;
+
+    // Revision 4 — OUR extension, forked builds only (build number >= 9)
+    virtual uint64_t GetLastFrameGpuTimeUs() = 0;
+    virtual uint64_t GetLastFrameGpuTimeFrameIndex() = 0;
 };
 ```
 
@@ -157,6 +179,25 @@ enum class VRUpscalingApplyBlockReason : uint32_t {
 
 `kOpenCompositeUpscaling` is the same gate that blocks CS upscaling when OCU DLSS
 is on — a governor will simply never be permitted to act in that configuration.
+
+## Revision 4 Is What We Add Back
+
+Everything above is CS answering questions about *its own settings*. None of it
+answers the only question a governor actually needs: how much of the frame budget
+is left. Frametime cannot answer it, because the compositor pins it at the
+refresh rate (E-1) — four presets spanning 6× in pixels all read 13.7–13.9 ms.
+
+`GetLastFrameGpuTimeUs()` returns GPU **work** for the last completed frame,
+bracketed by D3D11 timestamp queries that open at the frame's first draw and
+close immediately before `Present`, so the compositor wait is outside the
+bracket. Headroom is then `1 − gpuUs / budgetUs`, and D-10a's thresholds (climb
+above 10%, descend below 5%) apply to it directly.
+
+`GetLastFrameGpuTimeFrameIndex()` increments once per timed frame. A steady GPU
+time with a rising index is a genuinely steady scene; a steady GPU time with a
+frozen index is a stopped timer, and those must not be confused.
+
+Both return 0 when there is no measurement. **0 means "unknown", not "idle".**
 
 ## CORRECTION: The Fade Constants Are Advisory
 

@@ -5,9 +5,17 @@
 // GPL-3.0 Linking Exception. This header is published by that project as its
 // inter-plugin API for third-party SKSE plugins.
 //
-// Do not edit. Re-vendor from upstream when the API revision changes, and
-// update docs/CS_PLUGIN_API.md and tests/test_presets.cpp together with it -
-// the preset enum values are asserted there on purpose.
+// Do not edit, with one recorded exception. Re-vendor from upstream when the
+// API revision changes, and update docs/CS_PLUGIN_API.md and
+// tests/test_presets.cpp together with it - the preset enum values are asserted
+// there on purpose.
+//
+// The exception is revision 4 (GPU timing), which is this project's own
+// extension carried in zerotrust-dev/skyrim-community-shaders on branch
+// feat/expose-gpu-time-pl3.15 (design doc D-11, D-13). It is kept here so the
+// plugin can consume it, and it is gated at runtime so a stock provider is
+// never called on those slots. When it is upstreamed, this note goes away and
+// the whole header returns to being vendored verbatim.
 #pragma once
 
 #include <RE/Skyrim.h>
@@ -23,7 +31,16 @@ namespace CSPluginAPI
 	inline constexpr unsigned int CSInterfaceRevision001 = 1;
 	inline constexpr unsigned int CSInterfaceRevision002 = 2;
 	inline constexpr unsigned int CSInterfaceRevision003 = 3;
-	inline constexpr unsigned int CSInterfaceRevision = CSInterfaceRevision003;
+	// Revision 4 is OUR OWN extension, not upstream: it comes from
+	// zerotrust-dev/skyrim-community-shaders, branch feat/expose-gpu-time-pl3.15,
+	// and exists only in builds from that fork. Every caller of a revision-4
+	// method must check both the acquired revision and getBuildNumber() >= 9
+	// first - on a stock provider those vtable slots do not exist and calling
+	// one runs off the end of the table.
+	inline constexpr unsigned int CSInterfaceRevision004 = 4;
+	inline constexpr unsigned int CSInterfaceRevision = CSInterfaceRevision004;
+	// Build number at which revision-4 GPU timing became available.
+	inline constexpr unsigned int CSBuildNumberFrameGpuTime = 9;
 	// Guidance for VR transition controllers that hide render-scale relatches
 	// behind a game fade. These constants are advisory only and do not change
 	// the ABI; Community Shaders does not drive Game.FadeOutGame itself.
@@ -145,6 +162,31 @@ namespace CSPluginAPI
 		// transition while the player remains in the same cell type.
 		virtual uint32_t GetVRUpscalingApplyBlockReasons() = 0;
 		virtual bool IsVRUpscalingProfileApplyAllowed() = 0;
+
+		// Revision 4. GPU time in microseconds for the most recently completed
+		// frame, measured with D3D11 timestamp queries bracketing the frame's
+		// render work.
+		//
+		// This is GPU *work*, not present-to-present time. The bracket opens at
+		// the frame's first draw and closes immediately before Present, so it
+		// excludes the compositor wait. That is the whole point: a
+		// frametime-derived figure saturates once the compositor holds the
+		// application at the headset refresh rate and can no longer distinguish
+		// "just made it" from "half the frame was spare", while GPU time keeps
+		// varying with load.
+		//
+		// Caveat: idle gaps between draws in a CPU-bound frame fall inside the
+		// bracket, so the value is an upper bound on real GPU work. It errs
+		// toward reporting less headroom than exists, never more.
+		//
+		// Returns 0 when no measurement is available. Treat 0 as "unknown" and
+		// fall back to the frametime tier - it does not mean the GPU was idle.
+		virtual uint64_t GetLastFrameGpuTimeUs() = 0;
+
+		// Monotonic index of the frame the reading above describes. Increments
+		// once per timed frame, so a caller can tell a genuinely steady reading
+		// from a timer that has stopped producing new ones.
+		virtual uint64_t GetLastFrameGpuTimeFrameIndex() = 0;
 	};
 }  // namespace CSPluginAPI
 

@@ -407,6 +407,59 @@ reconstructible afterwards from the artifacts. This is not convenience: every
 wrong conclusion recorded in `MEASUREMENT_TRAPS.md` came from reasoning about
 something nobody was measuring at the time.
 
+### D-13 — Where the GPU timestamps bracket the frame
+
+D-11 chose Community Shaders as the place to measure GPU time. *Where inside the
+frame* the bracket opens and closes decides whether the number is worth having.
+
+**The failure mode is specific.** A `D3D11_QUERY_TIMESTAMP` pair measures elapsed
+time on the GPU timeline between two points in the command stream — **including
+any GPU idle between them.** If the bracket opens before the compositor releases
+the CPU (`WaitGetPoses` at frame start), the GPU sits idle inside the bracket for
+exactly as long as the throttle holds, and the measurement becomes
+frametime again: pinned at ~13.9 ms regardless of load, censored per E-1, and
+worthless for the same reason. Reproducing the censoring inside a new instrument
+would be the worst outcome available, because the number would still look
+plausible — exactly the shape of the trap already recorded as E-4.
+
+**Placement.**
+
+| Boundary | Where | Why there |
+|---|---|---|
+| open | the frame's **first draw**, via the existing `BSGraphics::SetDirtyStates` hook | The CPU has already passed the compositor throttle — the first draw cannot be submitted before it. Idle spent waiting is therefore outside the bracket. |
+| close | in the `IDXGISwapChain::Present` hook, **immediately before** the swap-chain call, after `Menu::DrawOverlay` | Everything the application submits for the frame is enclosed; the present/vsync wait is not. |
+
+The open boundary is *armed* at Present and *fired* by the first draw that
+follows, rather than issued at a fixed point. A fixed frame-start point would
+have to be either before the throttle (censoring) or at a CS-specific pass such
+as the deferred opaque pass, which would silently exclude shadow-map generation —
+a resolution-independent cost that `t_fixed` in D-2 exists to represent.
+
+**Known and accepted limitation.** When the frame is CPU-bound, gaps between
+draws where the GPU starves *are* inside the bracket, so the reading is an upper
+bound on real GPU work. This is the same limitation the reference implementation
+carries (OpenXR-Toolkit brackets `xrBeginFrame`→`xrEndFrame`), and it is
+conservative in the safe direction: it can make the governor believe it has less
+headroom than it does, never more. D-6 already covers the CPU-bound case.
+
+**Readback never stalls.** Four buffered query sets, read with
+`D3D11_ASYNC_GETDATA_DONOTFLUSH`; a set that is not ready is left for a later
+frame, and a frame whose set is still in flight is simply not timed. Results
+with the disjoint flag set are discarded, per the D3D11 contract.
+
+**Exposed as** `ICSInterface001::GetLastFrameGpuTimeUs()` at **interface
+revision 4**, appended to the vtable (never inserted — the ABI note in the header
+is binding), alongside `GetLastFrameGpuTimeFrameIndex()` so a consumer can tell a
+stale reading from a stable one rather than inferring it from an unchanging
+value. `0` means "no measurement available", which is the D-10 fallback tier's
+trigger.
+
+**Validation is external and is the point.** The reading is compared against
+PrimaShock's overlay across a preset sweep. If our GPU time tracks its overhead
+figure, the bracket is right; if ours is flat while PrimaShock's moves, the
+bracket enclosed the wait and this decision is wrong. Nothing about the
+implementation being "obviously correct" substitutes for that comparison.
+
 ---
 
 ## 5. The Algorithm
@@ -698,6 +751,20 @@ available (E-6).
 ---
 
 ## Decision Log
+
+**2026-08-06 — Bracket placement fixed for the CS GPU timer (D-13).**
+
+Roadmap step 4 needed one decision recorded before code: where the timestamp
+pair sits. The constraint is that a bracket enclosing the compositor throttle
+measures GPU idle as GPU work and reproduces the censoring of E-1 inside the
+instrument meant to escape it. Opening the bracket at the frame's first draw
+(armed at Present, fired by the first `SetDirtyStates`) puts the throttle
+outside it while keeping shadow-map generation inside; closing it immediately
+before the swap-chain call keeps the present out. The residual error — GPU
+starvation gaps in CPU-bound frames — is inside the bracket, is shared with the
+reference implementation, and errs toward *less* apparent headroom. Exposed at
+interface revision 4 with a frame index so staleness is observable rather than
+inferred. PrimaShock's overlay remains the acceptance test, not code review.
 
 **2026-08-05 — Headroom becomes the primary signal (D-10), CS is forked rather
 than a second layer built (D-11), telemetry becomes a first-class phase (D-12).**

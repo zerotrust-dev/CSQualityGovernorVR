@@ -33,8 +33,11 @@ public:
 	void WriteApiState(std::string_view a_line);
 
 	void WriteTransition(const TransitionRecord& a_record);
+	// a_gpuTimeUs is 0 when the provider has no GPU timer, or when it had no
+	// measurement for this frame; a_gpuFrameIndex tells those two apart, and
+	// tells a repeated reading from a fresh one.
 	void WriteFrame(double a_time, double a_frameTimeMs, std::uint32_t a_presetPublicValue,
-		std::string_view a_state);
+		std::string_view a_state, std::uint64_t a_gpuTimeUs, std::uint64_t a_gpuFrameIndex);
 
 	// Aggregates all records into a comparison table, then closes everything.
 	void Finish(const std::vector<TransitionRecord>& a_records, double a_budgetMs);

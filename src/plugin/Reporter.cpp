@@ -45,7 +45,7 @@ bool Reporter::OpenFrames()
 	if (!_frames) {
 		return false;
 	}
-	_frames << "time_s,frame_ms,preset_public,state\n";
+	_frames << "time_s,frame_ms,preset_public,state,gpu_us,gpu_frame\n";
 	return true;
 }
 
@@ -108,13 +108,14 @@ void Reporter::WriteTransition(const TransitionRecord& a_record)
 }
 
 void Reporter::WriteFrame(double a_time, double a_frameTimeMs, std::uint32_t a_presetPublicValue,
-	std::string_view a_state)
+	std::string_view a_state, std::uint64_t a_gpuTimeUs, std::uint64_t a_gpuFrameIndex)
 {
 	if (!_frames) {
 		return;
 	}
 	_frames << std::fixed << std::setprecision(4) << a_time << ',' << a_frameTimeMs << ','
-			<< a_presetPublicValue << ',' << a_state << '\n';
+			<< a_presetPublicValue << ',' << a_state << ',' << a_gpuTimeUs << ','
+			<< a_gpuFrameIndex << '\n';
 }
 
 void Reporter::Finish(const std::vector<TransitionRecord>& a_records, double a_budgetMs)

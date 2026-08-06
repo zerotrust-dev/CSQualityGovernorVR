@@ -119,6 +119,26 @@ ApiProbe ApiProbe::Run(CSPluginAPI::ICSInterface001* a_interface, unsigned int a
 			allowed ? "" : "not allowed right now - may simply be a loading screen" };
 	}));
 
+	if (GpuTimingAvailable(api, a_acquired)) {
+		probe.results.push_back(Probe("GetLastFrameGpuTimeUs", [&]() -> Reading {
+			const auto us = api->GetLastFrameGpuTimeUs();
+			const auto index = api->GetLastFrameGpuTimeFrameIndex();
+			// Zero this early is expected rather than wrong: the probe runs at
+			// kDataLoaded, and a loading screen may not have submitted a timed
+			// frame yet. What would be wrong is a value that never appears, and
+			// the per-frame trace is what shows that.
+			return { std::format("{} us (frame {})", us, index), true,
+				us == 0 ? "no measurement yet - normal during loading; check the frames CSV"
+						: "" };
+		}));
+	} else {
+		probe.results.push_back({ "GetLastFrameGpuTimeUs", "<not available>", true, true,
+			std::format("provider is revision {} build {}; GPU timing needs revision {} build {} "
+						"(the forked Community Shaders). Running on the frametime tier.",
+				a_acquired, probe.buildNumber, CSPluginAPI::CSInterfaceRevision004,
+				CSPluginAPI::CSBuildNumberFrameGpuTime) });
+	}
+
 	probe.results.push_back(Probe("GetSSSEnabled", [&]() -> Reading {
 		return { api->GetSSSEnabled() ? "true" : "false", true, "" };
 	}));
@@ -158,13 +178,24 @@ std::string ApiProbe::Format() const
 	return out;
 }
 
-ApiSnapshot ApiSnapshot::Capture(CSPluginAPI::ICSInterface001* a_interface)
+bool GpuTimingAvailable(CSPluginAPI::ICSInterface001* a_interface, unsigned int a_acquiredRevision)
+{
+	return a_interface != nullptr &&
+	       a_acquiredRevision >= CSPluginAPI::CSInterfaceRevision004 &&
+	       a_interface->getBuildNumber() >= CSPluginAPI::CSBuildNumberFrameGpuTime;
+}
+
+ApiSnapshot ApiSnapshot::Capture(CSPluginAPI::ICSInterface001* a_interface, bool a_withGpuTime)
 {
 	ApiSnapshot snap;
 	if (!a_interface) {
 		return snap;
 	}
 	try {
+		if (a_withGpuTime) {
+			snap.gpuTimeUs = a_interface->GetLastFrameGpuTimeUs();
+			snap.gpuFrameIndex = a_interface->GetLastFrameGpuTimeFrameIndex();
+		}
 		snap.upscalePreset = static_cast<std::uint32_t>(a_interface->GetUpscalePreset());
 		snap.upscaleMethod = static_cast<std::uint32_t>(a_interface->GetUpscaleMethod());
 		snap.dlssProfile = static_cast<std::uint32_t>(a_interface->GetDLSSProfile());
@@ -180,15 +211,15 @@ ApiSnapshot ApiSnapshot::Capture(CSPluginAPI::ICSInterface001* a_interface)
 std::string ApiSnapshot::CsvHeaderSuffix(std::string_view a_prefix) const
 {
 	return std::format("{0}_preset,{0}_method,{0}_dlss_profile,{0}_rs_enabled,"
-					   "{0}_rs_active,{0}_apply_allowed,{0}_block",
+					   "{0}_rs_active,{0}_apply_allowed,{0}_block,{0}_gpu_us,{0}_gpu_frame",
 		a_prefix);
 }
 
 std::string ApiSnapshot::CsvValues() const
 {
-	return std::format("{},{},{},{},{},{},0x{:X}", upscalePreset, upscaleMethod, dlssProfile,
-		renderScaleEnabled ? 1 : 0, renderScaleActive ? 1 : 0, applyAllowed ? 1 : 0,
-		blockReasons);
+	return std::format("{},{},{},{},{},{},0x{:X},{},{}", upscalePreset, upscaleMethod, dlssProfile,
+		renderScaleEnabled ? 1 : 0, renderScaleActive ? 1 : 0, applyAllowed ? 1 : 0, blockReasons,
+		gpuTimeUs, gpuFrameIndex);
 }
 
 }

@@ -77,6 +77,19 @@ public:
 	{
 		return g_CSInterface && g_CSInterface->IsVRUpscalingProfileApplyAllowed();
 	}
+
+	// Revision 4, forked provider only. Guarded by the caller through
+	// GpuTimingAvailable(); see the note on that function for why calling this
+	// unguarded is not a graceful failure.
+	std::uint64_t GpuTimeUs() const
+	{
+		return g_CSInterface ? g_CSInterface->GetLastFrameGpuTimeUs() : 0;
+	}
+
+	std::uint64_t GpuFrameIndex() const
+	{
+		return g_CSInterface ? g_CSInterface->GetLastFrameGpuTimeFrameIndex() : 0;
+	}
 };
 
 // ---------------------------------------------------------------------------
@@ -250,7 +263,83 @@ std::unique_ptr<Reporter> g_reporter;
 FrameSource g_frames;
 std::atomic_bool g_finished{ false };
 unsigned int g_revisionAcquired = 0;
+bool g_gpuTiming = false;
 double g_lastApiSample = -1.0;
+
+// ---------------------------------------------------------------------------
+// Live GPU-time readout.
+//
+// One line per second: framerate, frametime, GPU time and the headroom that
+// follows from it. This exists to be checked against PrimaShock's overlay - if
+// our GPU time tracks its overhead figure across a preset sweep, the timestamp
+// bracket in the forked Community Shaders excludes the compositor wait; if ours
+// stays flat while PrimaShock's moves, the bracket is wrong and the number is
+// just frametime again (design doc D-13).
+//
+// It is aggregated over a second rather than logged per frame because a per-
+// frame line at 72 Hz is unreadable while playing, and the comparison is with
+// something a human reads off a HUD.
+// ---------------------------------------------------------------------------
+struct GpuReadout
+{
+	double windowStart = -1.0;
+	std::uint32_t frames = 0;
+	double frameMsSum = 0.0;
+	double gpuMsSum = 0.0;
+	std::uint32_t gpuSamples = 0;
+	std::uint64_t lastGpuFrameIndex = 0;
+	std::uint32_t staleFrames = 0;
+
+	void Add(double a_now, double a_frameTimeMs, std::uint64_t a_gpuUs,
+		std::uint64_t a_gpuFrameIndex, double a_budgetMs, std::string_view a_presetName)
+	{
+		if (windowStart < 0.0) {
+			windowStart = a_now;
+		}
+		++frames;
+		frameMsSum += a_frameTimeMs;
+		if (a_gpuUs > 0) {
+			if (a_gpuFrameIndex != lastGpuFrameIndex) {
+				lastGpuFrameIndex = a_gpuFrameIndex;
+			} else {
+				++staleFrames;
+			}
+			gpuMsSum += static_cast<double>(a_gpuUs) / 1000.0;
+			++gpuSamples;
+		}
+
+		const double elapsed = a_now - windowStart;
+		if (elapsed < 1.0 || frames == 0) {
+			return;
+		}
+
+		const double meanFrameMs = frameMsSum / frames;
+		const double fps = meanFrameMs > 0.0 ? 1000.0 / meanFrameMs : 0.0;
+		if (gpuSamples == 0) {
+			logger::info("[readout] {} | {:.1f} fps | frame {:.2f} ms | gpu n/a", a_presetName, fps,
+				meanFrameMs);
+		} else {
+			const double meanGpuMs = gpuMsSum / gpuSamples;
+			// Percentages are formatted by hand: fmt v12 rejects the "%"
+			// presentation type at compile time.
+			const double headroom = a_budgetMs > 0.0 ? (1.0 - meanGpuMs / a_budgetMs) * 100.0 : 0.0;
+			logger::info(
+				"[readout] {} | {:.1f} fps | frame {:.2f} ms | gpu {:.2f} ms | headroom {:.1f}% | "
+				"gpu frames {} of {} ({} repeated)",
+				a_presetName, fps, meanFrameMs, meanGpuMs, headroom, gpuSamples, frames,
+				staleFrames);
+		}
+
+		windowStart = a_now;
+		frames = 0;
+		frameMsSum = 0.0;
+		gpuMsSum = 0.0;
+		gpuSamples = 0;
+		staleFrames = 0;
+	}
+};
+
+GpuReadout g_readout;
 
 std::filesystem::path OutputDirectory()
 {
@@ -335,16 +424,25 @@ void OnFrame(double a_now, double a_frameTimeMs)
 	// anyone having watched for it.
 	if (g_reporter && a_now - g_lastApiSample >= 0.5) {
 		g_lastApiSample = a_now;
-		const auto snap = ApiSnapshot::Capture(g_CSInterface);
+		const auto snap = ApiSnapshot::Capture(g_CSInterface, g_gpuTiming);
 		g_reporter->WriteApiState(std::format("{:.3f},{},{},{:.3f}", a_now,
 			CyclerStateName(g_cycler->State()), snap.CsvValues(), a_frameTimeMs));
 	}
 
+	// One read per frame, on the game thread with everything else. Both getters
+	// are plain atomic loads inside Community Shaders, so this costs nothing and
+	// keeps GPU time aligned with the frametime it belongs to.
+	const std::uint64_t gpuUs = g_gpuTiming ? g_api.GpuTimeUs() : 0;
+	const std::uint64_t gpuFrame = g_gpuTiming ? g_api.GpuFrameIndex() : 0;
+
+	const auto info = FindPreset(g_cycler->CurrentTarget());
 	if (g_config.writePerFrameCsv && g_reporter) {
-		const auto info = FindPreset(g_cycler->CurrentTarget());
 		g_reporter->WriteFrame(a_now, a_frameTimeMs, info ? info->publicValue : 0,
-			CyclerStateName(g_cycler->State()));
+			CyclerStateName(g_cycler->State()), gpuUs, gpuFrame);
 	}
+
+	g_readout.Add(a_now, a_frameTimeMs, gpuUs, gpuFrame, g_config.cycler.frameBudgetMs,
+		info ? info->name : "?");
 
 	FinishIfDone();
 }
@@ -439,6 +537,17 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message)
 						"revision {} lacks GetVRUpscalingApplyBlockReasons and "
 						"IsVRUpscalingProfileApplyAllowed; block detection will be blind",
 						g_revisionAcquired);
+				}
+				g_gpuTiming = GpuTimingAvailable(g_CSInterface, g_revisionAcquired);
+				if (g_gpuTiming) {
+					logger::info("GPU timing available (revision {}, build {}): headroom will be "
+								 "measured rather than inferred",
+						g_revisionAcquired, g_CSInterface->getBuildNumber());
+				} else {
+					logger::info(
+						"no GPU timing on this provider (revision {}, build {}); running on the "
+						"frametime tier, which is correct but conservative near the cap",
+						g_revisionAcquired, g_CSInterface->getBuildNumber());
 				}
 			} else {
 				logger::error(

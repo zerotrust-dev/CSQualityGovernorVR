@@ -40,6 +40,16 @@ struct ApiProbe
 		unsigned int a_acquired);
 };
 
+// True when the provider is one of our forked builds, i.e. when the revision-4
+// GPU timing slots actually exist on its vtable.
+//
+// This has to be checked before every revision-4 call. The revision-4 methods
+// are our own extension, so a stock Community Shaders returns an interface whose
+// vtable simply ends earlier; calling one of the new slots on it does not fail
+// cleanly, it jumps to whatever follows in memory.
+[[nodiscard]] bool GpuTimingAvailable(CSPluginAPI::ICSInterface001* a_interface,
+	unsigned int a_acquiredRevision);
+
 // Snapshot of every readable piece of API state, sampled around each
 // transition so drift in anything other than the preset is visible.
 struct ApiSnapshot
@@ -51,8 +61,12 @@ struct ApiSnapshot
 	bool renderScaleActive = false;
 	bool applyAllowed = false;
 	std::uint32_t blockReasons = 0;
+	// 0 when the provider has no GPU timer, which is also how a forked provider
+	// reports "no measurement for this frame". The frame index disambiguates.
+	std::uint64_t gpuTimeUs = 0;
+	std::uint64_t gpuFrameIndex = 0;
 
-	static ApiSnapshot Capture(CSPluginAPI::ICSInterface001* a_interface);
+	static ApiSnapshot Capture(CSPluginAPI::ICSInterface001* a_interface, bool a_withGpuTime);
 
 	[[nodiscard]] bool operator==(const ApiSnapshot&) const = default;
 	[[nodiscard]] std::string CsvHeaderSuffix(std::string_view a_prefix) const;
