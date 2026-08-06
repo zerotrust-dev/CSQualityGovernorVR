@@ -641,6 +641,27 @@ That is why this document exists in the form it does: an author receiving a
 patch is entitled to know whether it came from analysis or from guesswork. The
 evidence table, the decision log and the superseded decisions are the answer.
 
+**What the submission must contain, and must not.** The author-facing document
+lives in the fork at `docs/development/frame-gpu-time.md` and is written to be
+read by someone who owes us nothing. It carries a "What has NOT been
+established" section, and that section is not optional:
+
+- the unexplained ~1.3–1.5 ms residual against the reference at low load, and
+  the fact that the obvious explanation for it was **checked and disproved**;
+- that the reference is a sanity check, not an equality oracle, because its
+  bracket, statistic and aggregation all differ from ours;
+- that the load-independence claim rests on three samples at the high end;
+- that intra-frame idle is inside the bracket, so the reading is an upper bound;
+- that single-render-thread execution is assumed.
+
+**Nothing may be presented to the author as verified that an independent review
+downgraded.** Two claims in this document have already been withdrawn after
+measurement, and one after review; a patch offered upstream inherits that
+history whether or not it mentions it. Stating the limits is also the cheapest
+way to be trusted about the parts that *are* established — the boundaries, the
+query lifecycle, and a signal that separates seven rungs where frametime
+separates three.
+
 ### D-12 — The run must be readable from the logs alone
 
 Testing must not depend on the user narrating what they saw. Every session
@@ -1031,7 +1052,7 @@ that fails sends us back to Section 4 rather than being worked around.
 | **4** ✅ | **Fork CS at `eb54a72c`**, add the GPU timer, expose `GetLastFrameGpuTimeUs()` at interface revision 4. | The measurement that makes control correct rather than conservative. | **Closed 2026-08-06 with a stated residual.** The signal is uncensored (E-17), tracks the reference (E-18), and after D-13a carries a near-constant ~1 ms offset instead of a load-dependent one (E-19). It missed the sub-millisecond bar and is accepted anyway: Phase 3 fits thresholds by replaying our own traces, so it works in our units (D-10c), and the reference's job — proving the signal is real — is done |: GPU time separates all seven rungs where frametime separates three, and the 2.16 ms gap at UltraPerformance shows the wait is outside the bracket. External cross-check against the overlay's `appGPU` remains, now for offset calibration rather than verdict |
 | **5** | **Controller**, tiered: headroom loop (D-10) when GPU time is present, cost model (D-2/D-3) when not. Parameters chosen in CI by replaying recorded traces. | Both tiers must work; the first shipped version runs against unmodified CS. | Phase 3 simulation passes on all captured traces |
 | **6** | **Shadow mode**, then live. | First live run must not also be the first test. | Phase 4 and 5 pass |
-| **7** | **Upstream the CS patch** (D-11a), with this document and the measurements. | Removes the fork from the distribution path entirely. | Patch offered; governor ships against stock CS |
+| **7** | **Upstream the CS patch** (D-11a), with this document and the measurements. | Removes the fork from the distribution path entirely. | Patch offered; governor ships against stock CS. Author-facing rationale is already written — `docs/development/frame-gpu-time.md` in the fork — and the fork-only build workflow must be dropped from the PR |
 
 Steps 1–3 are on the governor repo and unblock everything. Step 4 is the only
 one touching Community Shaders.
