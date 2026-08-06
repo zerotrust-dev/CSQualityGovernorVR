@@ -101,6 +101,7 @@ future reader can tell measurement from assumption.
 | E-13 | **Observed control thresholds.** ≥10% overhead holds a solid 72; ~5% yields 70–71; 0% drops below. Reported as a stable perceptual rule across many sessions: whenever overhead is displayed at all, turning is smooth. | User observation, 2026-08-05 |
 | E-14 | **The CS VR API exists specifically to be driven by external governors.** The mod page states it "allows external mods like Shizof's VR FPS Stabilizer to dynamically toggle shadows, SSGI, and upscaler quality modes based on performance, weather and location conditions." | Nexus 166950 description, captured from MO2 `meta.ini` |
 | E-15 | Installed baseline identified exactly: **PL3.15 = release RC74 = commit `eb54a72c`**, published 2026-07-09T21:03Z, downloaded 2026-07-09T21:13Z. | MO2 `meta.ini`, GitHub releases API |
+| E-21 | **The linear cost model holds on GPU time, and the fit corroborates D-13a.** Fitting `gpu = t_fixed + t_scaled·f` across all seven presets (deduplicated by `gpu_frame`) gives residuals of −0.67 to +0.57 ms, most under 0.3. Across the two sessions: `t_fixed` 10.85 → **9.88 ms** and `t_scaled` 6.58 → **7.96 ms** after the close boundary moved to the compositor submit — exactly the direction an error that inflates low-load readings would produce, from evidence entirely independent of the reference comparison. `k` = 0.61 and 0.81 respectively. | `20260806_152146_frames.csv`, `20260806_161947_frames.csv` |
 | E-20 | **Independent audit: the end boundary is correct, my explanation of the residual was not.** Repeated `End()` on a timestamp query is documented behaviour (last call wins), so the per-eye re-stamp is sound. But upstream OpenComposite stores each eye and calls `SubmitFrames`→`xrEndFrame` only once **both** are in, so the reference bracket is a *superset* of ours — starting earlier at `xrBeginFrame`, ending later after the second-eye copy. Ours being larger therefore cannot be "the reference misses second-eye work". Independent recomputation: correlation **0.977** restricted to 7–20 ms, **0.995** on stable plateaus, residual +1.30 to +1.48 ms. | External review, 2026-08-06, `deliverables/Independent_VR_GPU_Time_Measurement_Audit.md` |
 | E-19 | **D-13a fixed most of it, and missed its own acceptance bar.** After moving the close to the compositor submit, the excess over the reference fell from +3.95 ms to **+1.65 ms** in the 7–8 ms bucket and our floor dropped 11.5 → **9.17 ms** (reference floor 7.68 ms, i.e. the user's reported 43%). The excess is now near-constant across load — +1.65 at 7–8 ms, +0.79 at 19–20 — where before it swung by 3.1 ms. The stated bar was sub-millisecond in the 7–9 bucket, and it was not met. | Session 2026-08-06 16:19, 279 matched seconds |
 | E-18 | **The bracket is right at the open end and wrong at the close end.** Joined against the toolkit's own `appGPU` log, 382 matched seconds of session 2026-08-06 15:21: **correlation 0.948**, but ours reads **+2.32 ms high** (sd 1.24), and the excess is *load-dependent* — +3.95 ms when their GPU is 7–8 ms, +0.85 ms when it is 15–16. Our reading has a floor near 11.5 ms and never goes below it; theirs reaches 7.41 ms. In headroom terms: ours 5.7%, theirs 22.4%. | `20260806_152146_frames.csv` joined to `stats_20260806_152045.csv` on wall clock |
@@ -591,6 +592,51 @@ place these numbers are allowed to be chosen.
 **Until Phase 3 has run, these defaults are placeholders and are not to be
 defended.** They exist so the controller can be exercised, not because they are
 right.
+
+### D-14 — Replay is counterfactual, and says so
+
+Phase 3 chooses the parameters by replaying recorded traces. That requires
+answering a question the trace cannot: **what would this frame have cost at a
+preset it was not rendered at?**
+
+The trace records GPU time at whatever preset the cycler had selected. A
+controller under replay will want to choose differently, and from that moment
+the recorded numbers no longer describe what it is doing. Ignoring this — feeding
+the recorded GPU time back regardless of the preset the controller picked —
+would produce a replay in which quality changes have no cost, and a parameter
+fit that maximises quality for free. It would also look entirely plausible.
+
+**So the replay synthesises the counterfactual from E-21's model:**
+
+```
+scaled:    gpu(t, p) = gpu_obs(t) · (t_fixed + t_scaled·f(p)) / (t_fixed + t_scaled·f(p_rec(t)))
+additive:  gpu(t, p) = gpu_obs(t) + t_scaled·(f(p) − f(p_rec(t)))
+```
+
+`t_fixed` and `t_scaled` are fitted per session from the sweep, which visits
+every preset within a few minutes.
+
+**Both forms are implemented, and the replay reports both.** They differ in what
+they assume about a scene getting heavier: the scaled form assumes the fixed and
+resolution-dependent costs grow together, the additive form assumes only the
+fixed part moves. Neither is obviously right. **Any parameter choice that depends
+on which one is used is not a parameter choice, it is an artefact**, and running
+both is the cheapest way to see that happen.
+
+**Limits, stated because a replay is easy to over-trust:**
+
+- The fit is a *session* average across whatever scenes the player moved
+  through, so it inherits Rule 7 in `MEASUREMENT_METHOD.md`. `k` measured 0.61
+  and 0.81 in two sessions on the same machine on the same day.
+- The model cannot represent a scene where resolution genuinely stops helping
+  (D-6's CPU-bound case) other than through a small `k`.
+- Settle behaviour after a change (E-2, ~1.0 s) is not in the trace at the
+  synthesised preset. Replay therefore over-states how quickly a change takes
+  effect, which flatters any parameter set that changes often.
+
+Replay is for **rejecting** parameter sets that oscillate or sit at the wrong
+rung, not for certifying one as optimal. Phase 4's shadow mode, where the
+decisions are computed against real frames, is what confirms it.
 
 ### D-11 — Fork Community Shaders; do not ship the fork
 

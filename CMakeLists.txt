@@ -20,6 +20,7 @@ add_library(csgov_core STATIC
     src/core/Stats.cpp
     src/core/CyclerCore.cpp
     src/core/GovernorCore.cpp
+    src/core/TraceReplay.cpp
 )
 
 target_include_directories(csgov_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
