@@ -389,6 +389,33 @@ E-13 gives them directly: `climb_floor ≈ 10%`, `descend_floor ≈ 5%`. The use
 zero tolerance for a load spike; 10% is where 72 was observed to hold reliably
 and 5% is where it was observed to slip.
 
+### D-10b — Headroom is judged on the tail, and the reference mean is only for cross-checking
+
+D-10a gives thresholds as percentages but does not say *of which statistic*, and
+the two available answers differ in exactly the regime that matters.
+
+`GetLastFrameGpuTimeUs()` is per-frame. The OpenXR-Toolkit figure that E-13's
+thresholds came from is a **mean** over its stats window. A scene whose mean
+headroom is 10% but whose worst frames reach 0% drops frames while reporting
+comfort, and D-7 already settled this argument for frametime: decide on the tail.
+
+**Therefore:**
+
+- Control on **P95 GPU time** over `W_judge` — i.e. `headroom_p95 = 1 −
+  p95(gpu_us) / budget_us`. Both the climb and the descend test use it, so the
+  controller cannot be optimistic in one direction and pessimistic in the other.
+- Log the **mean** as well, and only for comparison against the toolkit's
+  column. Any disagreement between our mean and theirs is an instrument
+  question; any disagreement between our mean and our P95 is a scene question.
+
+**This carries a known risk, stated rather than discovered later.** E-13's
+10%/5% were read off a *mean*, so applying them to a P95 makes the governor
+more conservative than the observation that produced them — by however much the
+GPU-time distribution is skewed, which nobody has measured yet. The numbers are
+therefore provisional until Phase 3 replays real traces and re-fits them. **Do
+not tune them in-game to compensate**; that is precisely the trap Phase 3 exists
+to avoid.
+
 ### D-11 — Fork Community Shaders; do not ship the fork
 
 Measuring GPU time correctly requires brackets around the frame's render work.
@@ -819,6 +846,8 @@ includes questions about somebody else's instrument.
 | Q-4 | Why did `LoadingMenu` block a whole session once? | **Answered 2026-08-04**: it blocks for >30 s after every load (E-9). `StartDelaySeconds` raised 20 → 45 |
 | Q-5 | Are our frametimes real, or is the delta-dedup undercounting? | **Answered 2026-08-04: undercounting, ~54% capture, biased against smooth frames** (E-10). Fix is the one-shot `AddTask` marshalling |
 | Q-6 | Does `k` differ enough between scene classes to need per-class seeding? | Phase 1 across the four classes; one data point so far (`k ≈ 2.10`, rainy exterior) |
+| Q-8 | **Where does headroom actually stop holding 72?** E-13 says ≥10% holds and ~5% slips, but that came from a tool that hides the figure below `target − 2` fps (E-16), so the failing half of the curve has never been observed. | The first capture with our own timer, which has no such gate: log headroom through the drops as well as through the clean running |
+| Q-9 | How skewed is per-frame GPU time? This decides how much more conservative D-10b's P95 is than the mean E-13's thresholds were read from. | Phase 3, from the captured traces |
 | Q-7 | How much does weather move `k` and `t_fixed`? The 2026-08-04 run roughly **doubled** in cost mid-session (NativeAA 15.4 → 25.7 ms) as rain set in. | Phase 1, by capturing the same spot in different weather |
 
 Answered since the 2026-08-01 revision: transition latency is ~1.0 s (E-2);
