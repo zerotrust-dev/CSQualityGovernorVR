@@ -43,8 +43,15 @@ public:
 		std::uint32_t a_presetPublicValue, std::string_view a_state, std::uint64_t a_gpuTimeUs,
 		std::uint64_t a_gpuFrameIndex);
 
-	// Aggregates all records into a comparison table, then closes everything.
+	// Aggregates all records into a comparison table and closes the transitions
+	// stream. The per-frame and API streams stay open for monitor mode.
 	void Finish(const std::vector<TransitionRecord>& a_records, double a_budgetMs);
+
+	// Bounds how much a hard exit can lose. Called once a second while
+	// monitoring, because a plugin's static destructors are not guaranteed to
+	// run when the game process goes away.
+	void Flush();
+	void CloseStreams();
 
 	[[nodiscard]] const std::filesystem::path& Directory() const noexcept { return _directory; }
 

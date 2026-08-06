@@ -137,6 +137,7 @@ PluginConfig PluginConfig::Load(const std::filesystem::path& a_path)
 	config.writeCsv = ini.GetBool("WriteCsv", config.writeCsv);
 	config.writePerFrameCsv = ini.GetBool("WritePerFrameCsv", config.writePerFrameCsv);
 	config.logToFile = ini.GetBool("LogToFile", config.logToFile);
+	config.monitorAfterSweep = ini.GetBool("MonitorAfterSweep", config.monitorAfterSweep);
 	config.targetHz = ini.GetDouble("TargetHz", config.targetHz);
 
 	config.cycler.startDelaySeconds =

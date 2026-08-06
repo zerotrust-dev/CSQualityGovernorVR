@@ -284,12 +284,32 @@ void Reporter::Finish(const std::vector<TransitionRecord>& a_records, double a_b
 		_transitions.flush();
 		_transitions.close();
 	}
+
+	// The per-frame and API streams are deliberately left open. Monitor mode
+	// keeps writing to them after the sweep completes, and the sweep is a small
+	// window inside a play session - the 2026-08-06 run recorded 4m38s of a
+	// session that ran far longer, so anything observed afterwards had no
+	// counterpart in our data.
+	Flush();
+}
+
+void Reporter::Flush()
+{
 	if (_frames) {
 		_frames.flush();
-		_frames.close();
 	}
 	if (_apiState) {
 		_apiState.flush();
+	}
+}
+
+void Reporter::CloseStreams()
+{
+	Flush();
+	if (_frames) {
+		_frames.close();
+	}
+	if (_apiState) {
 		_apiState.close();
 	}
 }

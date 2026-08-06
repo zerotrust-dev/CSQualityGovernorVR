@@ -25,6 +25,12 @@ struct PluginConfig
 	bool writePerFrameCsv = false;  // large; only for deep analysis
 	bool logToFile = true;
 
+	// Keep recording frames after the sweep finishes, for the rest of the play
+	// session. Without this the capture covers only the sweep - 4m38s of a much
+	// longer session on 2026-08-06 - and anything seen while simply playing has
+	// no counterpart in the data.
+	bool monitorAfterSweep = true;
+
 	// Refresh rate the frame budget is derived from.
 	double targetHz = 72.0;
 

@@ -274,6 +274,9 @@ std::atomic_bool g_finished{ false };
 unsigned int g_revisionAcquired = 0;
 bool g_gpuTiming = false;
 double g_lastApiSample = -1.0;
+// Public preset value as last read from CS. Only used once the sweep is over,
+// when nothing of ours is driving the lever.
+std::uint32_t g_monitorPreset = 0;
 
 // ---------------------------------------------------------------------------
 // Live GPU-time readout.
@@ -388,9 +391,18 @@ void FinishIfDone()
 	}
 
 	g_finished = true;
+
+	// In monitor mode the pump keeps running: the sweep is a short window inside
+	// a play session, and stopping here is what left the 2026-08-06 run with
+	// 4m38s of data for a session that continued long afterwards. Everything
+	// observed in that gap - including a reported 34% headroom that our capture
+	// never saw - had no counterpart to compare against.
+	//
 	// Quiesce, do NOT join: this runs on the sampling thread. The thread exits
 	// on its own once the flag is observed.
-	g_frames.Quiesce();
+	if (!g_config.monitorAfterSweep) {
+		g_frames.Quiesce();
+	}
 
 	// Capture completeness decides whether anything above is worth reading.
 	// Below ~0.9 the queue drained less often than once per frame, and every
@@ -413,20 +425,33 @@ void FinishIfDone()
 		logger::info("results written to {}", g_reporter->Directory().string());
 	}
 	logger::info("cycler finished in state {}", CyclerStateName(state));
+	if (g_config.monitorAfterSweep) {
+		logger::info("monitoring: still recording frames, GPU time and API state for the rest of "
+					 "the session. The preset is no longer being changed.");
+	}
 }
 
 void OnFrame(double a_now, double a_frameTimeMs)
 {
-	if (!g_cycler || g_finished.load()) {
+	if (!g_cycler) {
 		return;
 	}
 
-	const bool wasStarting = g_cycler->State() == CyclerState::Starting;
-	g_cycler->Tick(a_now, a_frameTimeMs);
-	if (wasStarting && g_cycler->State() != CyclerState::Starting) {
-		// The wait for CS is over; start the capture-ratio window here.
-		g_frames.MarkRunStart();
+	// After the sweep the cycler is left alone but everything else keeps
+	// recording, so the capture covers the whole play session rather than the
+	// sweep window.
+	const bool monitoring = g_finished.load();
+	if (!monitoring) {
+		const bool wasStarting = g_cycler->State() == CyclerState::Starting;
+		g_cycler->Tick(a_now, a_frameTimeMs);
+		if (wasStarting && g_cycler->State() != CyclerState::Starting) {
+			// The wait for CS is over; start the capture-ratio window here.
+			g_frames.MarkRunStart();
+		}
 	}
+
+	const std::string_view state =
+		monitoring ? std::string_view{ "Monitoring" } : CyclerStateName(g_cycler->State());
 
 	// Sample the whole readable API surface at ~2 Hz for the entire run, so
 	// drift in anything other than the preset is visible afterwards without
@@ -434,8 +459,14 @@ void OnFrame(double a_now, double a_frameTimeMs)
 	if (g_reporter && a_now - g_lastApiSample >= 0.5) {
 		g_lastApiSample = a_now;
 		const auto snap = ApiSnapshot::Capture(g_CSInterface, g_gpuTiming);
-		g_reporter->WriteApiState(std::format("{},{:.3f},{},{},{:.3f}", WallClockMs(), a_now,
-			CyclerStateName(g_cycler->State()), snap.CsvValues(), a_frameTimeMs));
+		// Cheap side effect worth having: this snapshot already read the preset,
+		// so monitor mode gets it without calling the API every frame.
+		g_monitorPreset = snap.upscalePreset;
+		g_reporter->WriteApiState(std::format("{},{:.3f},{},{},{:.3f}", WallClockMs(), a_now, state,
+			snap.CsvValues(), a_frameTimeMs));
+		// A game that exits without unwinding takes any buffered rows with it,
+		// and a monitored session can run for hours. Bound the loss to ~0.5 s.
+		g_reporter->Flush();
 	}
 
 	// One read per frame, on the game thread with everything else. Both getters
@@ -444,16 +475,22 @@ void OnFrame(double a_now, double a_frameTimeMs)
 	const std::uint64_t gpuUs = g_gpuTiming ? g_api.GpuTimeUs() : 0;
 	const std::uint64_t gpuFrame = g_gpuTiming ? g_api.GpuFrameIndex() : 0;
 
-	const auto info = FindPreset(g_cycler->CurrentTarget());
+	// While monitoring, the preset is whatever CS actually has - nothing is
+	// driving it any more, but the player can change it from the CS menu. It
+	// comes from the 2 Hz snapshot rather than a per-frame API call.
+	const auto info = monitoring ? FindPresetByPublicValue(g_monitorPreset)
+								 : FindPreset(g_cycler->CurrentTarget());
 	if (g_config.writePerFrameCsv && g_reporter) {
 		g_reporter->WriteFrame(WallClockMs(), a_now, a_frameTimeMs, info ? info->publicValue : 0,
-			CyclerStateName(g_cycler->State()), gpuUs, gpuFrame);
+			state, gpuUs, gpuFrame);
 	}
 
 	g_readout.Add(a_now, a_frameTimeMs, gpuUs, gpuFrame, g_config.cycler.frameBudgetMs,
 		info ? info->name : "?");
 
-	FinishIfDone();
+	if (!monitoring) {
+		FinishIfDone();
+	}
 }
 
 void BeginSession()
