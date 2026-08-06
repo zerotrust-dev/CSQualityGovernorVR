@@ -101,6 +101,52 @@ future reader can tell measurement from assumption.
 | E-13 | **Observed control thresholds.** ≥10% overhead holds a solid 72; ~5% yields 70–71; 0% drops below. Reported as a stable perceptual rule across many sessions: whenever overhead is displayed at all, turning is smooth. | User observation, 2026-08-05 |
 | E-14 | **The CS VR API exists specifically to be driven by external governors.** The mod page states it "allows external mods like Shizof's VR FPS Stabilizer to dynamically toggle shadows, SSGI, and upscaler quality modes based on performance, weather and location conditions." | Nexus 166950 description, captured from MO2 `meta.ini` |
 | E-15 | Installed baseline identified exactly: **PL3.15 = release RC74 = commit `eb54a72c`**, published 2026-07-09T21:03Z, downloaded 2026-07-09T21:13Z. | MO2 `meta.ini`, GitHub releases API |
+| E-16 | **The overlay's headroom is `(budget − appGpuTimeUs) / budget`, and it logs itself to disk.** Source: `headroomTime = (1000000/targetFps) − time; headroomPercent = (headroomTime/10)/frameTimeMs` — algebraically identical to ours. Four qualifiers came with it, below. | OpenXR-Toolkit 1.3.2 `menu.cpp:918-947`, `layer.cpp:2251/2344-2346/2569`; live registry and stats CSV on this machine, 2026-08-06 |
+
+### E-16 in detail — the reference signal, and its four qualifiers
+
+The overlay we have been reading is **OpenXR-Toolkit 1.3.2** (`XR_APILAYER_MBUCCHIA_toolkit`,
+the only implicit OpenXR layer registered on this machine; its log records
+`Application name: 'OpenComposite_SkyrimVR'`, `Pimax OpenXR`, `Pimax Crystal
+Super`). Its settings live in the registry under
+`HKCU\SOFTWARE\OpenXR_Toolkit\OpenComposite_SkyrimVR`, and reading them settles
+several things that were previously assumed:
+
+1. **`target_rate = 72`.** Their denominator is our denominator, 13 889 µs. The
+   two headroom figures are directly comparable without rescaling.
+2. **Their figure is a one-second *mean*** — `appGpuTimeUs /= numFrames` once per
+   window (`layer.cpp:2344-2346`). D-7 requires the governor to decide on the
+   tail, so the mean is what we compare against, **not** what we control on. Our
+   per-frame CSV keeps both available; the comparison must average our GPU time
+   the same way or it will disagree for reasons that have nothing to do with the
+   bracket.
+3. **The overlay only *displays* headroom when `fps + 2 >= targetFps`.** Below
+   that it shows "CPU bound"/"GPU bound (+X ms)" instead. This is the mechanism
+   behind E-13's "whenever overhead is displayed at all, turning is smooth" — the
+   *presence* of the number already implies ≥ 70 fps. E-13's thresholds are
+   therefore conditioned on that, which is an argument for their conservatism,
+   not against it.
+4. **`turbo = 1`.** Turbo Mode makes their `appCpuTimeUs` unreliable by their own
+   account, and they suppress the CPU line because of it. `appGpuTimeUs` is
+   unaffected, and it is the only column we use.
+
+Their bracket, for comparison with D-13: `appGpuTimer->start()` at `xrBeginFrame`
+— after `xrWaitFrame`, i.e. after the throttle — and `->stop()` at `xrEndFrame`
+(`layer.cpp:2253`, `2569`), read back one frame later through a rotating set of
+timers. Ours opens at the first draw and closes before `Present`. Same intent,
+same exclusion, different seam.
+
+**And it writes a CSV.** `record_stats = 1` opens
+`%LOCALAPPDATA%\OpenXR-Toolkit\stats\stats_<timestamp>.csv`:
+
+```
+time,FPS,appCPU (us),renderCPU (us),appGPU (us),VRAM (MB),VRAM (%)
+2026-07-30 11:53:40 +0200,72.0,13885,2553,12048,10591,33
+```
+
+That sample, from an earlier session, is the whole argument in one row: `appCPU`
+pinned at 13 885 µs — the censored quantity of E-1 — while `appGPU` reads
+12 048 µs, which is 13% headroom. One column saturated, the other not.
 
 ### E-1 is the finding that drives the whole design
 
@@ -454,11 +500,18 @@ stale reading from a stable one rather than inferring it from an unchanging
 value. `0` means "no measurement available", which is the D-10 fallback tier's
 trigger.
 
-**Validation is external and is the point.** The reading is compared against
-PrimaShock's overlay across a preset sweep. If our GPU time tracks its overhead
-figure, the bracket is right; if ours is flat while PrimaShock's moves, the
-bracket enclosed the wait and this decision is wrong. Nothing about the
-implementation being "obviously correct" substitutes for that comparison.
+**Validation is external and is the point.** The reading is compared against the
+OpenXR-Toolkit overlay's `appGpuTimeUs` across a preset sweep. If ours tracks
+theirs, the bracket is right; if ours is flat while theirs moves, the bracket
+enclosed the wait and this decision is wrong. Nothing about the implementation
+being "obviously correct" substitutes for that comparison.
+
+**The comparison is log-against-log, not eye-against-HUD** (E-16). Setting
+`record_stats = 1` makes the toolkit write its own per-window CSV, so both sides
+of the test come off disk and are joined on wall-clock time. Two consequences:
+the acceptance test no longer depends on anyone watching at the right moment,
+and our GPU time must be averaged over their window before comparing, because
+theirs is a mean and ours is per-frame.
 
 ---
 
@@ -728,9 +781,16 @@ comes to us.** Heavy scenes arrive on their own during ordinary play; they do no
 need to be visited on request. Any future question that can only be answered by
 staging a scene should first be treated as a gap in what is logged.
 
-The one genuinely unavoidable manual step is reading GPU headroom off
-PrimaShock's overlay, because nothing we control can measure it yet. That ends at
-roadmap step 4 and nowhere else.
+There is **no** unavoidable manual step, and the belief that there was one was
+wrong. This document previously recorded reading GPU headroom off the overlay by
+eye as the single exception. E-16 removes it: the overlay is OpenXR-Toolkit, and
+`record_stats = 1` makes it log `appGPU (us)` per window to
+`%LOCALAPPDATA%\OpenXR-Toolkit\stats\`. The reference signal comes off disk like
+everything else, and is joined to our own capture on wall-clock time.
+
+The lesson is the one this section already states, applied to itself: a question
+that seems to need a human observer is a gap in instrumentation, and that
+includes questions about somebody else's instrument.
 
 ## 8. Open Questions
 
@@ -751,6 +811,24 @@ available (E-6).
 ---
 
 ## Decision Log
+
+**2026-08-06 — The reference signal is readable from disk (E-16); the last
+"unavoidable" manual step was not unavoidable.**
+
+The overlay whose overhead figure this project has been treating as ground truth
+is OpenXR-Toolkit, it stores its settings in HKCU, and it can log
+`appGPU (us)` to CSV. Reading the source and the live settings confirmed the
+headroom formula is identical to ours and that `target_rate = 72` makes the
+denominators match — but also produced three qualifiers that were being assumed
+away: their figure is a one-second mean (so it is what we compare against, never
+what we control on, per D-7); the overlay only displays headroom at all when fps
+is within 2 of target, which is the mechanism behind E-13 rather than a
+coincidence; and Turbo Mode invalidates their CPU column but not the GPU one.
+
+Section 7b's claim that reading the overlay by eye was "the one genuinely
+unavoidable manual step" is withdrawn. It was never verified — the setting had
+been sitting in the registry the whole time, and two stats CSVs from earlier
+sessions were already on disk.
 
 **2026-08-06 — Bracket placement fixed for the CS GPU timer (D-13).**
 
