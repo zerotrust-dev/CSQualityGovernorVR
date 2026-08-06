@@ -630,8 +630,8 @@ that fails sends us back to Section 4 rather than being worked around.
 | # | Step | Why now | Done when |
 |---|---|---|---|
 | **1** | **Fix the frame sampler.** Thread for timing, one-shot `SKSE::AddTask` per frame, no dedup. | E-11: the bias inverted the ladder. Every number is currently suspect. Independent of everything else and the smallest change. | Capture rate ≈100%; Markarth ladder monotonic on re-run |
-| **2** | **Telemetry (D-12).** Continuous time-aligned log of frametime, preset, transitions, decisions and block reasons. | Makes every later step testable without the user narrating. | A session is fully reconstructible from artifacts alone |
-| **3** | **Re-run Phase 1** on the fixed sampler — Riverwood clear/storm, Markarth, one Medium. | Re-establishes the cost curves on trustworthy data. | `k` agrees within 15% across sweeps; residuals < 0.5 ms |
+| **2** | **Telemetry (D-12).** Continuous time-aligned log of frametime, preset, transitions, decisions and block reasons — during *free play*, not only during a scripted sweep. | Makes every later step testable without the user narrating, and without staging scenes. | A session is fully reconstructible from artifacts alone |
+| **3** | **Gather cost curves by playing**, not by staging. Walk normally; heavy scenes arrive on their own and telemetry records them. | Re-establishes the cost curves on trustworthy data. | `k` agrees within 15% across comparable segments; residuals < 0.5 ms |
 | **4** | **Fork CS at `eb54a72c`**, add the GPU timer, expose `GetLastFrameGpuTimeUs()` at interface revision 4. | The measurement that makes control correct rather than conservative. | Our GPU time tracks PrimaShock's overlay across a sweep |
 | **5** | **Controller**, tiered: headroom loop (D-10) when GPU time is present, cost model (D-2/D-3) when not. Parameters chosen in CI by replaying recorded traces. | Both tiers must work; the first shipped version runs against unmodified CS. | Phase 3 simulation passes on all captured traces |
 | **6** | **Shadow mode**, then live. | First live run must not also be the first test. | Phase 4 and 5 pass |
@@ -661,6 +661,23 @@ asking them a single question.
 ladder inversion (E-11) was invisible in the summary and only became explicable
 after inspecting per-visit sample counts. Anything not logged is something we
 will later reason about wrongly.
+
+### It also exists to stop asking the user to stage scenes
+
+Until this phase lands, answering a question means sending the user to a
+specific location, having them stand still for five minutes, and — where the
+signal is censored — read numbers off another mod's overlay by eye. That is slow,
+it does not scale, and it makes the data depend on someone's attention at the
+right moment.
+
+**The requirement is therefore explicit: the user plays normally, and the data
+comes to us.** Heavy scenes arrive on their own during ordinary play; they do not
+need to be visited on request. Any future question that can only be answered by
+staging a scene should first be treated as a gap in what is logged.
+
+The one genuinely unavoidable manual step is reading GPU headroom off
+PrimaShock's overlay, because nothing we control can measure it yet. That ends at
+roadmap step 4 and nowhere else.
 
 ## 8. Open Questions
 
