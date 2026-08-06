@@ -31,6 +31,14 @@ struct PluginConfig
 	// no counterpart in the data.
 	bool monitorAfterSweep = true;
 
+	// Run the controller and record every decision without acting on any of
+	// them. Phase 4: the first live run must not also be the first test.
+	//
+	// There is deliberately no setting here that lets it act. Applying is a
+	// separate change with its own phase, not a flag someone can flip.
+	bool shadowGovernor = true;
+	bool writeTimelineCsv = true;
+
 	// Refresh rate the frame budget is derived from.
 	double targetHz = 72.0;
 

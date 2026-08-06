@@ -2,6 +2,7 @@
 #include "Config.h"
 #include "Reporter.h"
 #include "core/CyclerCore.h"
+#include "core/GovernorCore.h"
 
 #include "VRAPI/CSinterface001.h"
 
@@ -268,6 +269,7 @@ private:
 PluginConfig g_config;
 LiveCSApi g_api;
 std::unique_ptr<CyclerCore> g_cycler;
+std::unique_ptr<GovernorCore> g_governor;
 std::unique_ptr<Reporter> g_reporter;
 FrameSource g_frames;
 std::atomic_bool g_finished{ false };
@@ -431,6 +433,67 @@ void FinishIfDone()
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Shadow mode.
+//
+// The controller sees everything and touches nothing. Every evaluation is
+// written to the timeline CSV, including the ones that decided to hold, because
+// "why did it not act" is as much a question as "why did it act" - and a
+// controller that only logs its changes cannot answer either.
+//
+// Two details that make the shadow decisions comparable to live ones:
+//
+//   - a preset change made by anything else (the cycler, or the player in the
+//     CS menu) resets the window. Otherwise a decision would be taken on
+//     samples from two different presets, which is the same defect as
+//     averaging across scenes.
+//   - a decision it would have acted on still starts its cooldown, via
+//     NotifyApplied. Nothing is applied; this only stops it re-deciding the
+//     same thing every 0.5 s and produces the pacing a live run would have.
+// ---------------------------------------------------------------------------
+void RunShadowGovernor(double a_now, double a_frameTimeMs, std::uint64_t a_gpuUs,
+	std::uint64_t a_gpuFrame, Preset a_preset, std::uint32_t a_presetPublicValue)
+{
+	if (!g_governor) {
+		return;
+	}
+
+	static Preset lastSeenPreset = a_preset;
+	if (a_preset != lastSeenPreset) {
+		g_governor->Reset(a_now);
+		lastSeenPreset = a_preset;
+	}
+
+	GovernorSample sample;
+	sample.nowSeconds = a_now;
+	sample.frameTimeMs = a_frameTimeMs;
+	sample.gpuTimeUs = a_gpuUs;
+	sample.gpuFrameIndex = a_gpuFrame;
+
+	const auto decision = g_governor->Push(sample, a_preset);
+	if (!decision) {
+		return;
+	}
+
+	if (g_config.writeTimelineCsv && g_reporter) {
+		const auto target = FindPreset(decision->target);
+		g_reporter->WriteTimeline(WallClockMs(), *decision, a_presetPublicValue,
+			target ? target->publicValue : a_presetPublicValue);
+	}
+
+	if (decision->action != GovernorAction::Hold) {
+		logger::info("[governor] WOULD {} {} -> {} | {} | tier={} p95gpu={:.2f}ms "
+					 "headroom={:.2f}ms p95frame={:.2f}ms drops={:.1f}% n={}",
+			GovernorActionName(decision->action), PresetName(a_preset),
+			PresetName(decision->target), decision->reason,
+			GovernorTierName(decision->tier), decision->p95GpuMs, decision->headroomMs,
+			decision->p95FrameMs, decision->dropRate * 100.0, decision->samples);
+
+		// Pacing only. Nothing was applied and nothing will be.
+		g_governor->NotifyApplied(decision->target, a_now);
+	}
+}
+
 void OnFrame(double a_now, double a_frameTimeMs)
 {
 	if (!g_cycler) {
@@ -488,6 +551,9 @@ void OnFrame(double a_now, double a_frameTimeMs)
 	g_readout.Add(a_now, a_frameTimeMs, gpuUs, gpuFrame, g_config.cycler.frameBudgetMs,
 		info ? info->name : "?");
 
+	RunShadowGovernor(a_now, a_frameTimeMs, gpuUs, gpuFrame, info ? info->preset : Preset::NativeAA,
+		info ? info->publicValue : 0);
+
 	if (!monitoring) {
 		FinishIfDone();
 	}
@@ -532,6 +598,23 @@ void BeginSession()
 		const ApiSnapshot header{};
 		g_reporter->OpenApiState(
 			std::format("wall_ms,time_s,cycler_state,{},frame_ms", header.CsvHeaderSuffix("api")));
+	}
+
+	if (g_config.shadowGovernor) {
+		GovernorConfig governorConfig;
+		governorConfig.frameBudgetMs = g_config.cycler.frameBudgetMs;
+		g_governor = std::make_unique<GovernorCore>(governorConfig);
+
+		if (g_config.writeTimelineCsv && !g_reporter->OpenTimeline()) {
+			logger::warn("could not open timeline CSV; decisions will only reach the log");
+		}
+		logger::info("shadow governor active: deciding and logging, applying nothing. "
+					 "climb below {:.2f} ms p95 GPU, descend above {:.2f} ms, budget {:.3f} ms",
+			governorConfig.frameBudgetMs - governorConfig.marginUpMs,
+			governorConfig.frameBudgetMs - governorConfig.marginDownMs,
+			governorConfig.frameBudgetMs);
+		logger::info("those thresholds are PROVISIONAL (D-10c): Phase 3 fits them by replaying "
+					 "captured traces, so do not read a bad decision as a bad design");
 	}
 
 	g_cycler = std::make_unique<CyclerCore>(g_api, g_config.cycler);

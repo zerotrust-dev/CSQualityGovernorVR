@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/CyclerCore.h"
+#include "core/GovernorCore.h"
 
 #include <filesystem>
 #include <fstream>
@@ -27,6 +28,14 @@ public:
 	bool OpenTransitions();
 	bool OpenFrames();
 	bool OpenApiState(std::string_view a_header);
+
+	// One row per controller evaluation, including the ones that decided to do
+	// nothing. Phase T of the design doc: a session has to be reconstructible
+	// from the artifacts alone - what the scene cost, what the controller saw,
+	// what it did, and why.
+	bool OpenTimeline();
+	void WriteTimeline(std::uint64_t a_wallMs, const GovernorDecision& a_decision,
+		std::uint32_t a_presetPublicValue, std::uint32_t a_targetPublicValue);
 
 	// Free-form artifact, e.g. the startup API probe.
 	void WriteText(std::string_view a_suffix, std::string_view a_content);
@@ -64,6 +73,7 @@ private:
 	std::ofstream _transitions;
 	std::ofstream _frames;
 	std::ofstream _apiState;
+	std::ofstream _timeline;
 };
 
 }

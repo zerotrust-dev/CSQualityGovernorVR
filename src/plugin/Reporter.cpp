@@ -64,6 +64,35 @@ bool Reporter::OpenApiState(std::string_view a_header)
 	return true;
 }
 
+bool Reporter::OpenTimeline()
+{
+	_timeline.open(Path("_timeline.csv"));
+	if (!_timeline) {
+		return false;
+	}
+	// Everything the decision rested on, so a later reader can recompute it and
+	// disagree. reason is last because it contains commas' worst enemy - prose -
+	// and is quoted.
+	_timeline << "wall_ms,time_s,tier,preset_public,action,target_public,samples,"
+				 "p95_frame_ms,drop_rate,gpu_p95_ms,gpu_mean_ms,headroom_ms,censored,reason\n";
+	return true;
+}
+
+void Reporter::WriteTimeline(std::uint64_t a_wallMs, const GovernorDecision& a_decision,
+	std::uint32_t a_presetPublicValue, std::uint32_t a_targetPublicValue)
+{
+	if (!_timeline) {
+		return;
+	}
+	_timeline << a_wallMs << ',' << std::fixed << std::setprecision(3) << a_decision.atSeconds
+			  << ',' << GovernorTierName(a_decision.tier) << ',' << a_presetPublicValue << ','
+			  << GovernorActionName(a_decision.action) << ',' << a_targetPublicValue << ','
+			  << a_decision.samples << ',' << std::setprecision(4) << a_decision.p95FrameMs << ','
+			  << a_decision.dropRate << ',' << a_decision.p95GpuMs << ',' << a_decision.meanGpuMs
+			  << ',' << a_decision.headroomMs << ',' << (a_decision.censored ? 1 : 0) << ",\""
+			  << a_decision.reason << "\"\n";
+}
+
 void Reporter::WriteText(std::string_view a_suffix, std::string_view a_content)
 {
 	std::ofstream file(Path(a_suffix));
@@ -301,6 +330,9 @@ void Reporter::Flush()
 	if (_apiState) {
 		_apiState.flush();
 	}
+	if (_timeline) {
+		_timeline.flush();
+	}
 }
 
 void Reporter::CloseStreams()
@@ -311,6 +343,9 @@ void Reporter::CloseStreams()
 	}
 	if (_apiState) {
 		_apiState.close();
+	}
+	if (_timeline) {
+		_timeline.close();
 	}
 }
 
