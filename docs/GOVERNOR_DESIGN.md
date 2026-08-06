@@ -493,6 +493,23 @@ headroom than it does, never more. D-6 already covers the CPU-bound case.
 frame, and a frame whose set is still in flight is simply not timed. Results
 with the disjoint flag set are discarded, per the D3D11 contract.
 
+**Why not CS's existing profiler.** Community Shaders already contains
+`src/Profiler.cpp`, which does D3D11 timestamp queries properly. It was not
+reused, and an upstream reviewer will reasonably ask why:
+
+- It is **opt-in twice over** — `IsEnabled()` requires both a user toggle and an
+  active capture request. A governor needs a signal that is always there,
+  including on a machine whose owner never opens the CS menu.
+- It measures **per-pass CS work**, up to 128 named timers per frame, not the
+  frame. Summing its passes would miss everything the game renders outside CS,
+  which is most of `t_fixed`.
+- It exists to drive a UI, and its cost is sized for that.
+
+The frame timer added here is three queries per frame, always on, and answers a
+different question: what did the whole frame cost the GPU. The two are
+complementary rather than redundant, which is also the argument for carrying
+both upstream.
+
 **Exposed as** `ICSInterface001::GetLastFrameGpuTimeUs()` at **interface
 revision 4**, appended to the vtable (never inserted — the ABI note in the header
 is binding), alongside `GetLastFrameGpuTimeFrameIndex()` so a consumer can tell a
