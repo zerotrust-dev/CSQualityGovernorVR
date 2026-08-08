@@ -474,7 +474,8 @@ void FinishIfDone()
 //     same thing every 0.5 s and produces the pacing a live run would have.
 // ---------------------------------------------------------------------------
 void RunShadowGovernor(double a_now, double a_frameTimeMs, std::uint64_t a_gpuUs,
-	std::uint64_t a_gpuFrame, Preset a_preset, std::uint32_t a_presetPublicValue)
+	std::uint64_t a_gpuFrame, Preset a_preset, std::uint32_t a_presetPublicValue,
+	bool a_monitoring)
 {
 	if (!g_governor) {
 		return;
@@ -503,7 +504,7 @@ void RunShadowGovernor(double a_now, double a_frameTimeMs, std::uint64_t a_gpuUs
 		// Live only after the sweep. The cycler owns the lever until then, and
 		// two owners on one lever is a failure this project has met more than
 		// once.
-		const bool live = g_config.applyGovernor && monitoring && !g_governorDisabled;
+		const bool live = g_config.applyGovernor && a_monitoring && !g_governorDisabled;
 
 		if (!live) {
 			outcome = "shadow";
@@ -643,7 +644,7 @@ void OnFrame(double a_now, double a_frameTimeMs)
 		info ? info->name : "?");
 
 	RunShadowGovernor(a_now, a_frameTimeMs, gpuUs, gpuFrame, info ? info->preset : Preset::NativeAA,
-		info ? info->publicValue : 0);
+		info ? info->publicValue : 0, monitoring);
 
 	if (!monitoring) {
 		FinishIfDone();
