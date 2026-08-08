@@ -72,18 +72,20 @@ struct GovernorConfig
 	// 1 ms is 7.2 points of the budget - more than the gap between the two
 	// thresholds. Percentages could not survive the translation.
 	//
-	// Fitted 2026-08-08 by replaying a captured session (E-23), replacing
-	// placeholders translated from an external overlay's thresholds.
+	// Re-swept 2026-08-08 across a light and a marginal capture, with D-16's
+	// landing check active (E-25).
 	//
-	// 3.0 is not the sweep's highest-scoring row: 2.5 scored f=0.511 against
-	// 0.489, but changed preset 5.15 times a minute against 3.13. Replay has no
-	// settle latency at a synthesised preset, so it flatters parameter sets
-	// that change often - 4% more pixels for 65% more transitions is the wrong
-	// side of D-8.
+	// margin_up is no longer the climb criterion - the landing check is. Below
+	// 2.0 this parameter is inert: every value from 2.0 down to -1.0 produces
+	// an identical replay, because the prediction binds first. What remains is
+	// its role as a conservatism limiter, and 2.5 is where that limit still
+	// keeps both captures inside the 2% over-budget constraint. At 2.0 the
+	// light capture breaches it at 2.4%.
 	//
-	// Still thin where it matters: the session behind the fit spent 109 s near
-	// the budget, and 71% of its frames had over 30% headroom.
-	double marginUpMs = 3.0;    // climb when p95 GPU < budget - this
+	// 2.5 over 3.0 buys about 3.5% more pixels for about 30% more preset
+	// changes. That trade was taken deliberately, by the person who sees the
+	// transitions, because replay has no settle latency and cannot price them.
+	double marginUpMs = 2.5;    // climb when p95 GPU < budget - this
 	double marginDownMs = 0.0;  // descend when p95 GPU > budget - this
 
 	// --- multi-rung climbing on the headroom tier (D-15) ---
