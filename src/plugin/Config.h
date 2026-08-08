@@ -39,6 +39,17 @@ struct PluginConfig
 	bool shadowGovernor = true;
 	bool writeTimelineCsv = true;
 
+	// Public preset value to select once monitoring begins, or -1 to leave
+	// whatever the sweep ended on.
+	//
+	// The sweep ends on the cheapest rung, so free play afterwards runs with
+	// large headroom and never exercises the region where the thresholds
+	// decide - 71% of the 2026-08-08 session sat above 30% headroom for exactly
+	// this reason. Setting a demanding preset here produces marginal load
+	// during ordinary play, which is the alternative to asking someone to go
+	// and stand somewhere expensive.
+	int monitorPreset = -1;
+
 	// Refresh rate the frame budget is derived from.
 	double targetHz = 72.0;
 

@@ -279,6 +279,10 @@ double g_lastApiSample = -1.0;
 // Public preset value as last read from CS. Only used once the sweep is over,
 // when nothing of ours is driving the lever.
 std::uint32_t g_monitorPreset = 0;
+// Set once when monitoring starts, if the config asks for a specific preset.
+// Cleared when it has been applied - CS refuses changes during loading, so it
+// may take several attempts.
+int g_pendingMonitorPreset = -1;
 
 // ---------------------------------------------------------------------------
 // Live GPU-time readout.
@@ -429,7 +433,17 @@ void FinishIfDone()
 	logger::info("cycler finished in state {}", CyclerStateName(state));
 	if (g_config.monitorAfterSweep) {
 		logger::info("monitoring: still recording frames, GPU time and API state for the rest of "
-					 "the session. The preset is no longer being changed.");
+					 "the session.");
+		// One deliberate exception to "the preset is no longer being changed":
+		// the sweep ends on the cheapest rung, so free play afterwards would
+		// never reach the load where the thresholds decide. Choosing a
+		// demanding preset here is how a marginal session gets captured during
+		// ordinary play rather than by sending someone somewhere expensive.
+		if (g_config.monitorPreset >= 0) {
+			g_pendingMonitorPreset = g_config.monitorPreset;
+		} else {
+			logger::info("  preset left as the sweep finished it");
+		}
 	}
 }
 
@@ -515,6 +529,25 @@ void OnFrame(double a_now, double a_frameTimeMs)
 
 	const std::string_view state =
 		monitoring ? std::string_view{ "Monitoring" } : CyclerStateName(g_cycler->State());
+
+	// Apply the monitor preset once CS will accept it. Retried on the same 2 Hz
+	// tick as the API sample rather than spun on, because a refused apply
+	// during a loading screen is normal and not an error.
+	if (monitoring && g_pendingMonitorPreset >= 0 && a_now - g_lastApiSample >= 0.5) {
+		if (const auto wanted = FindPresetByPublicValue(static_cast<std::uint32_t>(g_pendingMonitorPreset))) {
+			if (g_api.ApplyAllowed()) {
+				g_api.SetPreset(wanted->preset);
+				logger::info("monitoring at {} (MonitorPreset={}), so free play reaches the load "
+							 "where the thresholds decide",
+					wanted->name, g_pendingMonitorPreset);
+				g_pendingMonitorPreset = -1;
+			}
+		} else {
+			logger::warn("MonitorPreset={} is not a valid public preset value; ignoring",
+				g_pendingMonitorPreset);
+			g_pendingMonitorPreset = -1;
+		}
+	}
 
 	// Sample the whole readable API surface at ~2 Hz for the entire run, so
 	// drift in anything other than the preset is visible afterwards without
