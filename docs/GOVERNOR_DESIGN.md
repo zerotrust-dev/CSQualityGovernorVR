@@ -1300,7 +1300,7 @@ includes questions about somebody else's instrument.
 
 ## 8. Open Questions
 
-| # | Question | Resolved by |
+| Q-10 | **Is there a *leading* indicator of scene cost — interior/exterior, weather, actor count — worth feeding the controller?** | **Considered and declined, 2026-08-08.** Measured GPU time is already the best *lagging* indicator, and a second signal would have to either predict a cost change or separate a transient from a structural one; merely correlating with cost adds state without adding information. The case that prompted the question — two changes in eight seconds around a doorway — turned out to be the controller responding correctly to a real scene change, so there is no failure for prediction to fix. Telemetry for it was written and deleted unused. Revisit only if a failure appears that a leading signal would have prevented |
 |---|---|---|
 | Q-1 | Is a true GPU-time signal available? | **Answered 2026-08-06: yes.** GPU time separates all seven rungs while frametime separates only three (E-17). Phase 1b passes |
 | Q-2 | Do the rungs separate under real load? | **Answered 2026-08-04: yes, decisively** — 13.57 → 25.63 ms across the ladder under load (E-7) |
