@@ -72,10 +72,19 @@ struct GovernorConfig
 	// 1 ms is 7.2 points of the budget - more than the gap between the two
 	// thresholds. Percentages could not survive the translation.
 	//
-	// PROVISIONAL. Phase 3 fits these by replaying recorded traces. They are
-	// here so the controller can be exercised, not because they are right.
-	double marginUpMs = 0.4;     // climb when p95 GPU < budget - this
-	double marginDownMs = -0.3;  // descend when p95 GPU > budget - this
+	// Fitted 2026-08-08 by replaying a captured session (E-23), replacing
+	// placeholders translated from an external overlay's thresholds.
+	//
+	// 3.0 is not the sweep's highest-scoring row: 2.5 scored f=0.511 against
+	// 0.489, but changed preset 5.15 times a minute against 3.13. Replay has no
+	// settle latency at a synthesised preset, so it flatters parameter sets
+	// that change often - 4% more pixels for 65% more transitions is the wrong
+	// side of D-8.
+	//
+	// Still thin where it matters: the session behind the fit spent 109 s near
+	// the budget, and 71% of its frames had over 30% headroom.
+	double marginUpMs = 3.0;    // climb when p95 GPU < budget - this
+	double marginDownMs = 0.0;  // descend when p95 GPU > budget - this
 
 	// Decision window and cadence.
 	double judgeWindowSeconds = 2.0;

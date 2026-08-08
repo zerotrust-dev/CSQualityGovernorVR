@@ -101,6 +101,7 @@ future reader can tell measurement from assumption.
 | E-13 | **Observed control thresholds.** ≥10% overhead holds a solid 72; ~5% yields 70–71; 0% drops below. Reported as a stable perceptual rule across many sessions: whenever overhead is displayed at all, turning is smooth. | User observation, 2026-08-05 |
 | E-14 | **The CS VR API exists specifically to be driven by external governors.** The mod page states it "allows external mods like Shizof's VR FPS Stabilizer to dynamically toggle shadows, SSGI, and upscaler quality modes based on performance, weather and location conditions." | Nexus 166950 description, captured from MO2 `meta.ini` |
 | E-15 | Installed baseline identified exactly: **PL3.15 = release RC74 = commit `eb54a72c`**, published 2026-07-09T21:03Z, downloaded 2026-07-09T21:13Z. | MO2 `meta.ini`, GitHub releases API |
+| E-23 | **Dynamic control is worth up to +83% pixels over the safe fixed preset, and the first fitted parameters exist.** Replaying session 2026-08-08: fixed presets give 0.6% over budget at Balanced (f=0.346) and 2.4% at Quality (f=0.444), while a perfect-foresight oracle averages **f=0.632 at 0.1% over budget**. The parameter sweep's best row under a 2% constraint reaches **f=0.511 — 81% of the oracle** — at `marginUp 2.5 / marginDown 0.0`. The provisional `marginUp 0.4` was far too eager, as labelled. | CI replay report, `tests/data/session-20260808.csv` |
 | E-22 | **D-13b was the missing piece: 80% of frames were opening the bracket before the compositor released the application.** The counter added with D-13b reports 49 485 of 61 440 frames (80.5%) drawing before `WaitGetPoses` returned — so for four frames in five, the old start boundary put the pacing wait inside the measurement. With the start moved, the residual against the reference goes **+1.18 ms → −0.30 ms**, flat across load: −0.25 at 7–8 ms (17 s), −0.30 at 8–9 (171 s), −0.26 at 9–10 (227 s), −0.09 at 12–13, −0.15 at 17–18. Ours now reads slightly *below* the reference, which is the correct sign for a bracket that is a strict subset of theirs. | Session 2026-08-08 12:19, 639 matched seconds |
 | E-21 | **The linear cost model holds on GPU time, and the fit corroborates D-13a.** Fitting `gpu = t_fixed + t_scaled·f` across all seven presets (deduplicated by `gpu_frame`) gives residuals of −0.67 to +0.57 ms, most under 0.3. Across the two sessions: `t_fixed` 10.85 → **9.88 ms** and `t_scaled` 6.58 → **7.96 ms** after the close boundary moved to the compositor submit — exactly the direction an error that inflates low-load readings would produce, from evidence entirely independent of the reference comparison. `k` = 0.61 and 0.81 respectively. | `20260806_152146_frames.csv`, `20260806_161947_frames.csv` |
 | E-20 | **Independent audit: the end boundary is correct, my explanation of the residual was not.** Repeated `End()` on a timestamp query is documented behaviour (last call wins), so the per-eye re-stamp is sound. But upstream OpenComposite stores each eye and calls `SubmitFrames`→`xrEndFrame` only once **both** are in, so the reference bracket is a *superset* of ours — starting earlier at `xrBeginFrame`, ending later after the second-eye copy. Ours being larger therefore cannot be "the reference misses second-eye work". Independent recomputation: correlation **0.977** restricted to 7–20 ms, **0.995** on stable plateaus, residual +1.30 to +1.48 ms. | External review, 2026-08-06, `deliverables/Independent_VR_GPU_Time_Measurement_Audit.md` |
@@ -617,22 +618,31 @@ This follows D-3's reasoning for the cost model — a proportional margin is wro
 when a fixed cost dominates the frame — and it makes the offset a property of one
 number rather than of every comparison.
 
-**Provisional defaults, by translating E-13 through E-19's offset:**
+**Fitted 2026-08-08 by replay (E-23), superseding the translated placeholders:**
 
-| | reference | +1.0 ms offset | our units |
-|---|---|---|---|
-| climb (their 10%) | ≤ 12.50 ms | | `margin_up = 0.4 ms` |
-| descend (their 5%) | ≥ 13.19 ms | | `margin_down = −0.3 ms` |
+| | value | meaning |
+|---|---|---|
+| `margin_up` | **3.0 ms** | climb only when P95 GPU is below 10.9 ms |
+| `margin_down` | **0.0 ms** | descend when P95 GPU exceeds the budget |
 
-Two corrections pull in opposite directions and are deliberately not netted off
-by hand: E-13's figures are **means** while D-10b judges the **P95**, which makes
-climbing harder than the source observation implies; and the offset makes it
-easier. Phase 3 fits both out by replaying recorded traces, which is the only
-place these numbers are allowed to be chosen.
+The earlier placeholders — `margin_up 0.4`, `margin_down −0.3`, translated from
+E-13 through a measured offset — were far too eager, which the shadow run made
+obvious before the sweep confirmed it.
 
-**Until Phase 3 has run, these defaults are placeholders and are not to be
-defended.** They exist so the controller can be exercised, not because they are
-right.
+**Why 3.0 and not the sweep's top row.** The best row under the 2% constraint is
+`margin_up 2.5`, at f=0.511 against 0.489 for 3.0. It is not chosen, because it
+changes preset 5.15 times a minute against 3.13. Replay has no settle latency at
+a synthesised preset (E-2 measured ~1.0 s), so it systematically flatters
+parameter sets that change often, and D-8 already says success is few correct
+changes rather than many small ones. Buying 4% more pixels with 65% more
+transitions is the wrong side of that trade, and the replay cannot see the cost
+of it.
+
+**Still provisional in one specific respect.** The session behind this fit spent
+109 s near the budget out of 5.4 minutes, and 71% of its frames had ≥30%
+headroom. That is enough to rank parameters but thin for the region where the
+thresholds actually decide. A capture with sustained marginal load should
+re-run the same sweep before these are treated as settled.
 
 ### D-14 — Replay is counterfactual, and says so
 
