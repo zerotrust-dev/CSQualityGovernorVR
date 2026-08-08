@@ -13,17 +13,20 @@ jobs:
   core-tests:
     name: Core unit tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # This job normally finishes in about 90 seconds. On 2026-08-06 the ubuntu
-    # leg ran 15 minutes twice, to the second, and was then cancelled with no
-    # step recorded and no log retained - so there was nothing to diagnose.
-    # A short job timeout plus a per-test timeout turns that into a named
-    # failing test with output, which is the difference between a bug and a
-    # mystery.
+    # This job normally finishes in about 90 seconds. On 2026-08-06 the Linux
+    # leg sat 15 minutes in the queue twice and was cancelled with steps=0 and
+    # no runner assigned - it never started, so nothing here was at fault. The
+    # image is pinned rather than tracking the `latest` alias, which is where
+    # that allocation went wrong.
+    #
+    # timeout-minutes bounds execution, not queue time, so it does not prevent
+    # a repeat. It is here for the case the alias-pinning does not cover: a
+    # test that genuinely hangs.
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-24.04, windows-latest]
 
     steps:
       - uses: actions/checkout@v4
