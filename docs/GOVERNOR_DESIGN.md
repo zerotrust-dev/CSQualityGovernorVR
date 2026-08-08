@@ -101,12 +101,53 @@ future reader can tell measurement from assumption.
 | E-13 | **Observed control thresholds.** ≥10% overhead holds a solid 72; ~5% yields 70–71; 0% drops below. Reported as a stable perceptual rule across many sessions: whenever overhead is displayed at all, turning is smooth. | User observation, 2026-08-05 |
 | E-14 | **The CS VR API exists specifically to be driven by external governors.** The mod page states it "allows external mods like Shizof's VR FPS Stabilizer to dynamically toggle shadows, SSGI, and upscaler quality modes based on performance, weather and location conditions." | Nexus 166950 description, captured from MO2 `meta.ini` |
 | E-15 | Installed baseline identified exactly: **PL3.15 = release RC74 = commit `eb54a72c`**, published 2026-07-09T21:03Z, downloaded 2026-07-09T21:13Z. | MO2 `meta.ini`, GitHub releases API |
+| E-22 | **D-13b was the missing piece: 80% of frames were opening the bracket before the compositor released the application.** The counter added with D-13b reports 49 485 of 61 440 frames (80.5%) drawing before `WaitGetPoses` returned — so for four frames in five, the old start boundary put the pacing wait inside the measurement. With the start moved, the residual against the reference goes **+1.18 ms → −0.30 ms**, flat across load: −0.25 at 7–8 ms (17 s), −0.30 at 8–9 (171 s), −0.26 at 9–10 (227 s), −0.09 at 12–13, −0.15 at 17–18. Ours now reads slightly *below* the reference, which is the correct sign for a bracket that is a strict subset of theirs. | Session 2026-08-08 12:19, 639 matched seconds |
 | E-21 | **The linear cost model holds on GPU time, and the fit corroborates D-13a.** Fitting `gpu = t_fixed + t_scaled·f` across all seven presets (deduplicated by `gpu_frame`) gives residuals of −0.67 to +0.57 ms, most under 0.3. Across the two sessions: `t_fixed` 10.85 → **9.88 ms** and `t_scaled` 6.58 → **7.96 ms** after the close boundary moved to the compositor submit — exactly the direction an error that inflates low-load readings would produce, from evidence entirely independent of the reference comparison. `k` = 0.61 and 0.81 respectively. | `20260806_152146_frames.csv`, `20260806_161947_frames.csv` |
 | E-20 | **Independent audit: the end boundary is correct, my explanation of the residual was not.** Repeated `End()` on a timestamp query is documented behaviour (last call wins), so the per-eye re-stamp is sound. But upstream OpenComposite stores each eye and calls `SubmitFrames`→`xrEndFrame` only once **both** are in, so the reference bracket is a *superset* of ours — starting earlier at `xrBeginFrame`, ending later after the second-eye copy. Ours being larger therefore cannot be "the reference misses second-eye work". Independent recomputation: correlation **0.977** restricted to 7–20 ms, **0.995** on stable plateaus, residual +1.30 to +1.48 ms. | External review, 2026-08-06, `deliverables/Independent_VR_GPU_Time_Measurement_Audit.md` |
 | E-19 | **D-13a fixed most of it, and missed its own acceptance bar.** After moving the close to the compositor submit, the excess over the reference fell from +3.95 ms to **+1.65 ms** in the 7–8 ms bucket and our floor dropped 11.5 → **9.17 ms** (reference floor 7.68 ms, i.e. the user's reported 43%). The excess is now near-constant across load — +1.65 at 7–8 ms, +0.79 at 19–20 — where before it swung by 3.1 ms. The stated bar was sub-millisecond in the 7–9 bucket, and it was not met. | Session 2026-08-06 16:19, 279 matched seconds |
 | E-18 | **The bracket is right at the open end and wrong at the close end.** Joined against the toolkit's own `appGPU` log, 382 matched seconds of session 2026-08-06 15:21: **correlation 0.948**, but ours reads **+2.32 ms high** (sd 1.24), and the excess is *load-dependent* — +3.95 ms when their GPU is 7–8 ms, +0.85 ms when it is 15–16. Our reading has a floor near 11.5 ms and never goes below it; theirs reaches 7.41 ms. In headroom terms: ours 5.7%, theirs 22.4%. | `20260806_152146_frames.csv` joined to `stats_20260806_152045.csv` on wall clock |
 | E-17 | **The GPU timer works and the signal is uncensored. D-13 passes.** Session 2026-08-06 14:33, 17 538 frames, 99.4% capture. The four cheapest presets all read 13.84–13.96 ms of frametime — indistinguishable, as E-1 says — while their GPU times read 11.73 / 12.47 / 13.19 / 14.00 ms, cleanly separated and monotonic in pixel count. All seven rungs order correctly within a single sweep. | `20260806_143350_frames.csv` |
 | E-16 | **The overlay's headroom is `(budget − appGpuTimeUs) / budget`, and it logs itself to disk.** Source: `headroomTime = (1000000/targetFps) − time; headroomPercent = (headroomTime/10)/frameTimeMs` — algebraically identical to ours. Four qualifiers came with it, below. | OpenXR-Toolkit 1.3.2 `menu.cpp:918-947`, `layer.cpp:2251/2344-2346/2569`; live registry and stats CSV on this machine, 2026-08-06 |
+
+### E-22 in detail — the start boundary, and what shadow mode cannot show
+
+**The measurement question is closed.** The residual that three sessions could
+not explain was the start boundary, and the counter added with D-13b says so
+directly: **80.5% of frames drew before `WaitGetPoses` returned**. D-13's
+assumption — that a frame's first draw necessarily follows the compositor wait —
+was wrong for four frames in five, and no further reasoning about the *close*
+boundary would ever have found it. An independent reviewer pointed at the start;
+one session settled it.
+
+| their GPU | seconds | ours − theirs |
+|---|---:|---:|
+| 7–8 ms | 17 | −0.25 |
+| 8–9 ms | 171 | −0.30 |
+| 9–10 ms | 227 | −0.26 |
+| 12–13 ms | 43 | −0.09 |
+| 17–18 ms | 14 | −0.15 |
+
+Within half a millisecond at every load, with 188 seconds of evidence in the
+7–9 ms range where earlier claims rested on three. The remaining −0.3 ms has the
+right sign and a mechanism: their bracket starts earlier (`xrBeginFrame`, before
+our first draw) and ends later (after OpenComposite's second-eye copy), making
+it a strict superset of ours.
+
+**Shadow mode has a limit this session made obvious.** Nothing is applied, so a
+climb does not make the next frame more expensive, and the controller re-decides
+the same climb after every cooldown: 199 climbs against 29 descends, with 1120
+of 1179 holds being "cooldown". **The change rate under shadow mode measures
+nothing**; only the direction of the first decision after each real preset
+change carries information.
+
+That is not a defect in shadow mode — it is precisely why D-14 exists. The
+replay harness charges for a quality change by synthesising its cost, which is
+what a live run would do and a shadow run cannot.
+
+**The thresholds are visibly wrong, as labelled.** With 71% of frames at ≥30%
+headroom in this session, "climb below 13.49 ms" fires almost always. That is
+the predicted consequence of translating E-13's numbers through an offset that
+has since changed twice. Placeholders until Phase 3 fits them.
 
 ### E-19 in detail — after D-13a, and what the residual is not
 
