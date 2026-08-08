@@ -35,6 +35,19 @@ endif()
 if(CSGOV_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+
+    # Offline analysis of a captured session. Built alongside the tests because
+    # it shares their dependency footprint - none - and because Phase 3 chooses
+    # the controller's parameters with it, so it must build everywhere the core
+    # does rather than only on a machine with the game.
+    add_executable(csgov_replay src/tools/replay_main.cpp)
+    target_link_libraries(csgov_replay PRIVATE csgov_core)
+    target_compile_features(csgov_replay PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(csgov_replay PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(csgov_replay PRIVATE -Wall -Wextra)
+    endif()
 endif()
 
 if(CSGOV_BUILD_PLUGIN)

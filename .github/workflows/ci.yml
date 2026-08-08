@@ -42,6 +42,25 @@ jobs:
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure --timeout 60
 
+      # Phase 3 runs here, not on someone's desktop: the parameter sweep is
+      # printed for every build, against a committed capture, so a change to the
+      # controller shows up as a change in the recommended parameters rather
+      # than as a number somebody quoted once.
+      - name: Replay a captured session
+        if: runner.os == 'Linux'
+        run: |
+          ./build/csgov_replay tests/data/session-20260808.csv --csv sweep.csv | tee replay-report.txt
+
+      - name: Upload replay report
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: replay-report
+          path: |
+            replay-report.txt
+            sweep.csv
+          retention-days: 30
+
   # Bootstrap pattern copied from the sibling HeadDirectedTurning repo, which
   # builds green. The pinned vcpkg commit must match the baseline in
   # vcpkg-configuration.json.
