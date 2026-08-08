@@ -101,7 +101,7 @@ future reader can tell measurement from assumption.
 | E-13 | **Observed control thresholds.** ≥10% overhead holds a solid 72; ~5% yields 70–71; 0% drops below. Reported as a stable perceptual rule across many sessions: whenever overhead is displayed at all, turning is smooth. | User observation, 2026-08-05 |
 | E-14 | **The CS VR API exists specifically to be driven by external governors.** The mod page states it "allows external mods like Shizof's VR FPS Stabilizer to dynamically toggle shadows, SSGI, and upscaler quality modes based on performance, weather and location conditions." | Nexus 166950 description, captured from MO2 `meta.ini` |
 | E-15 | Installed baseline identified exactly: **PL3.15 = release RC74 = commit `eb54a72c`**, published 2026-07-09T21:03Z, downloaded 2026-07-09T21:13Z. | MO2 `meta.ini`, GitHub releases API |
-| E-24 | **Phase 5 passes on its own terms, and shows two defects.** First live session, 6.5 minutes of free play (mountain path at night, dark interior): the governor reached **f=0.382 at 0.7% over budget**, against fixed Balanced 0.346 at 0.5% and fixed Quality 0.444 at 12.8%. More pixels than the conservative baseline, a fraction of the misses of the ambitious one. 87.4% of frames at ≥71 fps, **0.18% dropped**, and every dropped frame in the session occurred within 2 s of a preset change (42 in total, all from descents; the six climbs cost none). Defects: 8 of 14 changes fired at **0.01–0.27 ms** over the descend line, and one climb reversed 8 s later because the first rung of a climb is not landing-checked. | Session 2026-08-08 16:34 |
+| E-24 | **Phase 5 passes on its own terms, and shows two defects.** First live session, 6.5 minutes of free play (mountain path at night, dark interior): the governor reached **f=0.382 at 0.7% over budget**, against fixed Balanced 0.346 at 0.5% and fixed Quality 0.444 at 12.8%. More pixels than the conservative baseline, a fraction of the misses of the ambitious one. 87.4% of frames at ≥71 fps, **0.18% dropped**, and every dropped frame in the session occurred within 2 s of a preset change (42 in total, all from descents; the six climbs cost none). Defect: 8 of 14 changes fired at **0.01–0.27 ms** over the descend line. The one climb that reversed within 8 s was **not** a defect — the player had entered a dark interior with almost nothing to draw and stepped back out into a forest 5 s later; the controller tracked a real scene change in both directions. | Session 2026-08-08 16:34, and the player's account of it |
 | E-23 | **Dynamic control is worth up to +83% pixels over the safe fixed preset, and the first fitted parameters exist.** Replaying session 2026-08-08: fixed presets give 0.6% over budget at Balanced (f=0.346) and 2.4% at Quality (f=0.444), while a perfect-foresight oracle averages **f=0.632 at 0.1% over budget**. The parameter sweep's best row under a 2% constraint reaches **f=0.511 — 81% of the oracle** — at `marginUp 2.5 / marginDown 0.0`. The provisional `marginUp 0.4` was far too eager, as labelled. | CI replay report, `tests/data/session-20260808.csv` |
 | E-22 | **D-13b was the missing piece: 80% of frames were opening the bracket before the compositor released the application.** The counter added with D-13b reports 49 485 of 61 440 frames (80.5%) drawing before `WaitGetPoses` returned — so for four frames in five, the old start boundary put the pacing wait inside the measurement. With the start moved, the residual against the reference goes **+1.18 ms → −0.30 ms**, flat across load: −0.25 at 7–8 ms (17 s), −0.30 at 8–9 (171 s), −0.26 at 9–10 (227 s), −0.09 at 12–13, −0.15 at 17–18. Ours now reads slightly *below* the reference, which is the correct sign for a bracket that is a strict subset of theirs. | Session 2026-08-08 12:19, 639 matched seconds |
 | E-21 | **The linear cost model holds on GPU time, and the fit corroborates D-13a.** Fitting `gpu = t_fixed + t_scaled·f` across all seven presets (deduplicated by `gpu_frame`) gives residuals of −0.67 to +0.57 ms, most under 0.3. Across the two sessions: `t_fixed` 10.85 → **9.88 ms** and `t_scaled` 6.58 → **7.96 ms** after the close boundary moved to the compositor submit — exactly the direction an error that inflates low-load readings would produce, from evidence entirely independent of the reference comparison. `k` = 0.61 and 0.81 respectively. | `20260806_152146_frames.csv`, `20260806_161947_frames.csv` |
@@ -768,8 +768,20 @@ it must pass the same landing check as the rungs above it.
 exempted it, on the reasoning that the climb threshold had already been met.
 That is not the same question: *"is there spare capacity now"* and *"will there
 still be spare capacity after paying for this rung"* differ by exactly the cost
-of the rung, and at 683.5 s the difference sent it to UltraQuality and back
-within eight seconds.
+of the rung.
+
+**This change is prophylactic, and the evidence I first cited for it was
+wrong.** The climb-then-reverse at 683.5 s looked like an overshoot in the
+timeline; the player's account is that they had walked into an unlit interior
+with almost nothing to draw and back out into a forest five seconds later. The
+controller was right twice, not wrong once. Checking the same prediction on that
+climb would have permitted it anyway — 10.82 ms predicts a 12.13 ms landing
+against a 12.89 ms limit — so the fix costs nothing there and still closes the
+case it was meant for: a climb whose own cost puts it past the descend line.
+
+The lesson is the recurring one. A timeline shows what the controller did, never
+what the room looked like, and inferring the second from the first produced a
+confident wrong reading for the third time in this project.
 
 Not addressed here, and deliberately: the descend threshold itself stays at
 `margin_down = 0.0`. Widening it would hide the transients rather than

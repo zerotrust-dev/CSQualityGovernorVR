@@ -287,9 +287,12 @@ GovernorDecision GovernorCore::EvaluateHeadroom(double, Preset a_current,
 				                         (1.0 + _config.costK * fNow);
 				// D-16: every rung is checked, including the first. "Is there
 				// spare capacity now" and "will there still be after paying for
-				// this rung" differ by exactly the cost of the rung, and taking
-				// the first on the climb test alone sent one session to
-				// UltraQuality and back within eight seconds.
+				// this rung" differ by exactly the cost of the rung.
+				//
+				// Prophylactic, not a fix for an observed failure: the one
+				// climb-then-reverse in the first live session turned out to be
+				// the player walking into an unlit interior and back out, which
+				// this check would have permitted anyway.
 				if (predicted > landAt) {
 					break;
 				}
