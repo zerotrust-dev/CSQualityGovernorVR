@@ -13,6 +13,13 @@ jobs:
   core-tests:
     name: Core unit tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # This job normally finishes in about 90 seconds. On 2026-08-06 the ubuntu
+    # leg ran 15 minutes twice, to the second, and was then cancelled with no
+    # step recorded and no log retained - so there was nothing to diagnose.
+    # A short job timeout plus a per-test timeout turns that into a named
+    # failing test with output, which is the difference between a bug and a
+    # mystery.
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -27,8 +34,10 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --parallel
 
+      # --timeout kills an individual hanging test and names it, rather than
+      # letting the job run to its own limit and die anonymously.
       - name: Test
-        run: ctest --test-dir build -C Release --output-on-failure
+        run: ctest --test-dir build -C Release --output-on-failure --timeout 60
 
   # Bootstrap pattern copied from the sibling HeadDirectedTurning repo, which
   # builds green. The pinned vcpkg commit must match the baseline in
