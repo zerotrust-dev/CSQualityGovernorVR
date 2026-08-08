@@ -46,10 +46,15 @@ jobs:
       # printed for every build, against a committed capture, so a change to the
       # controller shows up as a change in the recommended parameters rather
       # than as a number somebody quoted once.
-      - name: Replay a captured session
+      # Both sessions, because they cover different regimes and a parameter set
+      # that only suits one of them is not a parameter set. The marginal
+      # capture is the one whose load sits where the thresholds decide.
+      - name: Replay captured sessions
         if: runner.os == 'Linux'
         run: |
-          ./build/csgov_replay tests/data/session-20260808.csv --csv sweep.csv | tee replay-report.txt
+          ./build/csgov_replay tests/data/session-20260808.csv --csv sweep-light.csv | tee replay-report.txt
+          echo >> replay-report.txt
+          ./build/csgov_replay tests/data/session-20260808-marginal.csv --csv sweep-marginal.csv | tee -a replay-report.txt
 
       - name: Upload replay report
         if: runner.os == 'Linux'
@@ -58,7 +63,8 @@ jobs:
           name: replay-report
           path: |
             replay-report.txt
-            sweep.csv
+            sweep-light.csv
+            sweep-marginal.csv
           retention-days: 30
 
   # Bootstrap pattern copied from the sibling HeadDirectedTurning repo, which
