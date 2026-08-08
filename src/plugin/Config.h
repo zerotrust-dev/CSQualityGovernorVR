@@ -46,6 +46,16 @@ struct PluginConfig
 	// has bitten this project repeatedly, and the cycler owns it until then.
 	bool applyGovernor = false;
 
+	// Circuit breaker: disable the governor for the session if it applies more
+	// changes than this in any rolling minute.
+	//
+	// The replay predicts 2-3 a minute and D-8 wants few correct changes, so a
+	// sustained double-digit rate means something is wrong - a bad threshold, a
+	// scene the cost model mispredicts, or an oscillation. In a headset the
+	// alternative to stopping by itself is quitting the game, since editing an
+	// ini is not an option mid-session.
+	int maxChangesPerMinute = 12;
+
 	// Public preset value to select once monitoring begins, or -1 to leave
 	// whatever the sweep ended on.
 	//

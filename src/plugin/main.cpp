@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <deque>
 #include <optional>
 #include <thread>
 
@@ -292,6 +293,31 @@ std::optional<Preset> g_bufferedTarget;
 // would be a spin, not a recovery.
 bool g_governorDisabled = false;
 
+// Timestamps of applied changes, for the circuit breaker. There is no in-game
+// way to stop the governor, so it has to be able to stop itself.
+std::deque<double> g_appliedAt;
+
+// Records an applied change and returns false if the rate has run away, in
+// which case the governor is disabled for the session and the preset is left
+// wherever it currently is.
+bool RegisterApplyAndCheckRate(double a_nowSeconds)
+{
+	g_appliedAt.push_back(a_nowSeconds);
+	while (!g_appliedAt.empty() && a_nowSeconds - g_appliedAt.front() > 60.0) {
+		g_appliedAt.pop_front();
+	}
+	if (static_cast<int>(g_appliedAt.size()) <= g_config.maxChangesPerMinute) {
+		return true;
+	}
+
+	logger::error("[governor] {} changes in the last minute exceeds MaxChangesPerMinute={}. "
+				  "Disabling for this session and leaving the preset alone. This is a runaway, "
+				  "not a tuning problem - the timeline CSV has every decision and its reason.",
+		g_appliedAt.size(), g_config.maxChangesPerMinute);
+	g_governorDisabled = true;
+	return false;
+}
+
 // ---------------------------------------------------------------------------
 // Live GPU-time readout.
 //
@@ -545,6 +571,7 @@ void RunShadowGovernor(double a_now, double a_frameTimeMs, std::uint64_t a_gpuUs
 				// Only now: a refused apply must not start a cooldown against a
 				// change that never happened.
 				g_governor->NotifyApplied(decision->target, a_now);
+				RegisterApplyAndCheckRate(a_now);
 			}
 		}
 	}
@@ -606,6 +633,7 @@ void OnFrame(double a_now, double a_frameTimeMs)
 			PresetName(*g_bufferedTarget));
 		g_governor->NotifyApplied(*g_bufferedTarget, a_now);
 		g_bufferedTarget.reset();
+		RegisterApplyAndCheckRate(a_now);
 	}
 
 	// Sample the whole readable API surface at ~2 Hz for the entire run, so
