@@ -141,6 +141,7 @@ PluginConfig PluginConfig::Load(const std::filesystem::path& a_path)
 	config.shadowGovernor = ini.GetBool("ShadowGovernor", config.shadowGovernor);
 	config.writeTimelineCsv = ini.GetBool("WriteTimelineCsv", config.writeTimelineCsv);
 	config.monitorPreset = ini.GetInt("MonitorPreset", config.monitorPreset);
+	config.applyGovernor = ini.GetBool("ApplyGovernor", config.applyGovernor);
 	config.targetHz = ini.GetDouble("TargetHz", config.targetHz);
 
 	config.cycler.startDelaySeconds =

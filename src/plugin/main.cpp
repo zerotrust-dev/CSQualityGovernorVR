@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <optional>
 #include <thread>
 
 CSPluginAPI::ICSInterface001* g_CSInterface = nullptr;
@@ -284,6 +285,13 @@ std::uint32_t g_monitorPreset = 0;
 // may take several attempts.
 int g_pendingMonitorPreset = -1;
 
+// The latest target the governor wanted while CS was refusing changes. Latest
+// wins: an older target describes a scene we have already left.
+std::optional<Preset> g_bufferedTarget;
+// Set on a terminal block, which lasts the whole session. Retrying after one
+// would be a spin, not a recovery.
+bool g_governorDisabled = false;
+
 // ---------------------------------------------------------------------------
 // Live GPU-time readout.
 //
@@ -489,22 +497,61 @@ void RunShadowGovernor(double a_now, double a_frameTimeMs, std::uint64_t a_gpuUs
 		return;
 	}
 
+	std::string_view outcome = "hold";
+
+	if (decision->action != GovernorAction::Hold) {
+		// Live only after the sweep. The cycler owns the lever until then, and
+		// two owners on one lever is a failure this project has met more than
+		// once.
+		const bool live = g_config.applyGovernor && monitoring && !g_governorDisabled;
+
+		if (!live) {
+			outcome = "shadow";
+			logger::info("[governor] WOULD {} {} -> {} | {} | tier={} p95gpu={:.2f}ms "
+						 "headroom={:.2f}ms p95frame={:.2f}ms drops={:.1f}% n={}",
+				GovernorActionName(decision->action), PresetName(a_preset),
+				PresetName(decision->target), decision->reason,
+				GovernorTierName(decision->tier), decision->p95GpuMs, decision->headroomMs,
+				decision->p95FrameMs, decision->dropRate * 100.0, decision->samples);
+			// Pacing only, so the shadow cadence resembles a live one.
+			g_governor->NotifyApplied(decision->target, a_now);
+		} else {
+			const auto blocked = g_api.BlockReasons();
+			if (IsTerminalBlock(blocked)) {
+				// OpenComposite upscaling has taken the lever for the session.
+				// Say so once and stop, rather than retrying forever.
+				logger::error("[governor] disabled for this session: {}",
+					DescribeBlockReasons(blocked));
+				g_governorDisabled = true;
+				outcome = "terminal-block";
+			} else if (!g_api.ApplyAllowed()) {
+				// Buffer the latest desired target and retry, as the API
+				// documentation prescribes. Latest wins: an older target is
+				// stale by definition.
+				g_bufferedTarget = decision->target;
+				outcome = "deferred";
+			} else {
+				g_api.SetPreset(decision->target);
+				const auto readback = g_api.GetPreset();
+				const bool matched = readback == decision->target;
+				logger::info("[governor] {} {} -> {}{} | {} | p95gpu={:.2f}ms headroom={:.2f}ms",
+					GovernorActionName(decision->action), PresetName(a_preset),
+					PresetName(decision->target),
+					matched ? "" : " (READBACK MISMATCH)", decision->reason,
+					decision->p95GpuMs, decision->headroomMs);
+				outcome = matched ? "applied" : "readback-mismatch";
+				g_bufferedTarget.reset();
+				// Only now: a refused apply must not start a cooldown against a
+				// change that never happened.
+				g_governor->NotifyApplied(decision->target, a_now);
+			}
+		}
+	}
+
 	if (g_config.writeTimelineCsv && g_reporter) {
 		const auto target = FindPreset(decision->target);
 		g_reporter->WriteTimeline(WallClockMs(), *decision, a_presetPublicValue,
-			target ? target->publicValue : a_presetPublicValue);
-	}
-
-	if (decision->action != GovernorAction::Hold) {
-		logger::info("[governor] WOULD {} {} -> {} | {} | tier={} p95gpu={:.2f}ms "
-					 "headroom={:.2f}ms p95frame={:.2f}ms drops={:.1f}% n={}",
-			GovernorActionName(decision->action), PresetName(a_preset),
-			PresetName(decision->target), decision->reason,
-			GovernorTierName(decision->tier), decision->p95GpuMs, decision->headroomMs,
-			decision->p95FrameMs, decision->dropRate * 100.0, decision->samples);
-
-		// Pacing only. Nothing was applied and nothing will be.
-		g_governor->NotifyApplied(decision->target, a_now);
+			target ? target->publicValue : a_presetPublicValue, outcome);
 	}
 }
 
@@ -547,6 +594,17 @@ void OnFrame(double a_now, double a_frameTimeMs)
 				g_pendingMonitorPreset);
 			g_pendingMonitorPreset = -1;
 		}
+	}
+
+	// A target buffered while CS was refusing changes. Retried on the 2 Hz tick
+	// rather than spun on, and dropped once it lands.
+	if (monitoring && g_bufferedTarget && !g_governorDisabled &&
+		a_now - g_lastApiSample >= 0.5 && g_api.ApplyAllowed()) {
+		g_api.SetPreset(*g_bufferedTarget);
+		logger::info("[governor] applied buffered target {} once CS allowed it",
+			PresetName(*g_bufferedTarget));
+		g_governor->NotifyApplied(*g_bufferedTarget, a_now);
+		g_bufferedTarget.reset();
 	}
 
 	// Sample the whole readable API surface at ~2 Hz for the entire run, so
@@ -641,13 +699,15 @@ void BeginSession()
 		if (g_config.writeTimelineCsv && !g_reporter->OpenTimeline()) {
 			logger::warn("could not open timeline CSV; decisions will only reach the log");
 		}
-		logger::info("shadow governor active: deciding and logging, applying nothing. "
-					 "climb below {:.2f} ms p95 GPU, descend above {:.2f} ms, budget {:.3f} ms",
+		logger::info("governor active ({}): climb below {:.2f} ms p95 GPU, descend above {:.2f} "
+					 "ms, budget {:.3f} ms",
+			g_config.applyGovernor ? "APPLYING after the sweep" : "shadow, applying nothing",
 			governorConfig.frameBudgetMs - governorConfig.marginUpMs,
 			governorConfig.frameBudgetMs - governorConfig.marginDownMs,
 			governorConfig.frameBudgetMs);
-		logger::info("those thresholds are PROVISIONAL (D-10c): Phase 3 fits them by replaying "
-					 "captured traces, so do not read a bad decision as a bad design");
+		logger::info("thresholds fitted 2026-08-08 by replay across a light and a marginal "
+					 "session (D-10c, E-23); k={:.2f} for multi-rung climbs, max {} rungs",
+			governorConfig.costK, governorConfig.maxClimbRungs);
 	}
 
 	g_cycler = std::make_unique<CyclerCore>(g_api, g_config.cycler);

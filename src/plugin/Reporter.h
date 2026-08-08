@@ -34,8 +34,13 @@ public:
 	// from the artifacts alone - what the scene cost, what the controller saw,
 	// what it did, and why.
 	bool OpenTimeline();
+	// a_outcome records what became of the decision - shadow, applied,
+	// deferred, refused - because "it decided to climb" and "the climb
+	// happened" are different facts and a log that conflates them cannot be
+	// used to explain a session.
 	void WriteTimeline(std::uint64_t a_wallMs, const GovernorDecision& a_decision,
-		std::uint32_t a_presetPublicValue, std::uint32_t a_targetPublicValue);
+		std::uint32_t a_presetPublicValue, std::uint32_t a_targetPublicValue,
+		std::string_view a_outcome);
 
 	// Free-form artifact, e.g. the startup API probe.
 	void WriteText(std::string_view a_suffix, std::string_view a_content);

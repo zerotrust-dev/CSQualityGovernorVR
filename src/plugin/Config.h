@@ -31,13 +31,20 @@ struct PluginConfig
 	// no counterpart in the data.
 	bool monitorAfterSweep = true;
 
-	// Run the controller and record every decision without acting on any of
-	// them. Phase 4: the first live run must not also be the first test.
-	//
-	// There is deliberately no setting here that lets it act. Applying is a
-	// separate change with its own phase, not a flag someone can flip.
+	// Run the controller and record every decision. Phase 4: the first live run
+	// must not also be the first test.
 	bool shadowGovernor = true;
 	bool writeTimelineCsv = true;
+
+	// Let the controller actually change the preset. Phase 5.
+	//
+	// Off by default, and deliberately separate from shadowGovernor: turning
+	// the observer on is free, turning the actuator on is not, and the two
+	// should never be the same switch.
+	//
+	// It only ever acts once the sweep has finished. Two owners on one lever
+	// has bitten this project repeatedly, and the cycler owns it until then.
+	bool applyGovernor = false;
 
 	// Public preset value to select once monitoring begins, or -1 to leave
 	// whatever the sweep ended on.
