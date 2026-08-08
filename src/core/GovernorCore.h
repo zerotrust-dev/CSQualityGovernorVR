@@ -86,6 +86,13 @@ struct GovernorConfig
 	double marginUpMs = 3.0;    // climb when p95 GPU < budget - this
 	double marginDownMs = 0.0;  // descend when p95 GPU > budget - this
 
+	// Consecutive evaluations over the descend line before descending (D-16).
+	// One is too few: 8 of 14 changes in the first live session fired at
+	// 0.01-0.27 ms over, which is noise, and each cost about six dropped frames
+	// plus a rung of quality for the next half-minute. Two costs half a second
+	// of response to a genuine overload, which drops nothing.
+	int descendConfirmations = 2;
+
 	// --- multi-rung climbing on the headroom tier (D-15) ---
 	// Resolution sensitivity used to predict where a climb lands. Defaults to
 	// the HIGHEST value measured across sessions (0.61, 0.81, 0.95, 1.29), so
@@ -166,11 +173,11 @@ private:
 	};
 
 	void Trim(double a_nowSeconds);
-	[[nodiscard]] GovernorDecision Evaluate(double a_nowSeconds, Preset a_current) const;
+	[[nodiscard]] GovernorDecision Evaluate(double a_nowSeconds, Preset a_current);
 	[[nodiscard]] GovernorDecision EvaluateHeadroom(double a_nowSeconds, Preset a_current,
-		GovernorDecision a_base) const;
+		GovernorDecision a_base);
 	[[nodiscard]] GovernorDecision EvaluateFrametime(double a_nowSeconds, Preset a_current,
-		GovernorDecision a_base) const;
+		GovernorDecision a_base);
 
 	GovernorConfig _config;
 	std::deque<Entry> _window;
@@ -194,6 +201,10 @@ private:
 	// happened.
 	GovernorAction _pendingAction = GovernorAction::Hold;
 	GovernorTier _pendingTier = GovernorTier::Frametime;
+
+	// Consecutive evaluations currently over the descend line. Reset by
+	// anything that is not over it, so a trend has to be continuous.
+	int _overBudgetEvals = 0;
 };
 
 }

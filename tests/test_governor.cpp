@@ -152,6 +152,62 @@ TEST_CASE("GPU time over budget descends", "[governor]")
 	CHECK(PresetScale(h.changes.front().target) < PresetScale(Preset::Quality));
 }
 
+TEST_CASE("a single evaluation over the line does not descend", "[governor]")
+{
+	// D-16. Eight of fourteen changes in the first live session fired at
+	// 0.01-0.27 ms over, each costing about six dropped frames and a rung of
+	// quality for the next half-minute.
+	auto config = TestConfig();
+	config.descendConfirmations = 2;
+	Harness h{ config, Preset::Quality };
+
+	// Comfortably inside the band, then one window's worth barely over, then
+	// back. A transient, not a trend.
+	h.Run(4.0, 13.889, 12.5);
+	const auto before = h.changes.size();
+	h.Run(0.4, 13.889, 14.0);
+	h.Run(4.0, 13.889, 12.5);
+
+	CHECK(h.changes.size() == before);
+}
+
+TEST_CASE("a sustained overload still descends promptly", "[governor]")
+{
+	// The other half of D-16: confirmations must not blunt the response to a
+	// real overload, only to noise.
+	auto config = TestConfig();
+	config.descendConfirmations = 2;
+	Harness h{ config, Preset::Quality };
+
+	h.Run(3.0, 13.889, 12.5);
+	const auto before = h.changes.size();
+	h.Run(3.0, 16.0, 16.0);
+
+	REQUIRE(h.changes.size() > before);
+	CHECK(h.changes.back().action == GovernorAction::Descend);
+}
+
+TEST_CASE("a climb that would land past the band is not taken", "[governor]")
+{
+	// D-16: the first rung is landing-checked like the rest. Spare capacity now
+	// and spare capacity after paying for the rung are different questions.
+	auto config = TestConfig();
+	config.marginUpMs = 3.0;
+	config.landingMarginMs = 1.0;
+	config.costK = 1.3;
+	Harness h{ config, Preset::Hoshipa };
+
+	// Just inside the climb threshold, but one rung from Hoshipa to NativeAA is
+	// a large step in pixels - it cannot land inside the band.
+	h.Run(20.0, 13.889, config.frameBudgetMs - config.marginUpMs - 0.1);
+
+	for (const auto& change : h.changes) {
+		CHECK(change.action != GovernorAction::Climb);
+	}
+	REQUIRE_FALSE(h.decisions.empty());
+	CHECK(h.decisions.back().reason.find("would land past") != std::string::npos);
+}
+
 TEST_CASE("the band between the thresholds holds still", "[governor]")
 {
 	auto config = TestConfig();

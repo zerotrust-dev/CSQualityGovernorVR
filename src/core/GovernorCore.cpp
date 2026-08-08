@@ -184,7 +184,7 @@ std::optional<GovernorDecision> GovernorCore::Push(const GovernorSample& a_sampl
 	return decision;
 }
 
-GovernorDecision GovernorCore::Evaluate(double a_nowSeconds, Preset a_current) const
+GovernorDecision GovernorCore::Evaluate(double a_nowSeconds, Preset a_current)
 {
 	std::vector<double> frames;
 	std::vector<double> gpus;
@@ -228,7 +228,7 @@ GovernorDecision GovernorCore::Evaluate(double a_nowSeconds, Preset a_current) c
 }
 
 GovernorDecision GovernorCore::EvaluateHeadroom(double, Preset a_current,
-	GovernorDecision a_base) const
+	GovernorDecision a_base)
 {
 	auto decision = std::move(a_base);
 
@@ -238,12 +238,23 @@ GovernorDecision GovernorCore::EvaluateHeadroom(double, Preset a_current,
 	const double climbAt = _config.frameBudgetMs - _config.marginUpMs;
 
 	if (decision.p95GpuMs > descendAt) {
+		// D-16: a descent has to be earned. Crossing by 0.01 ms is noise, and
+		// acting on it costs about six dropped frames for the transition plus a
+		// rung of quality for the next half-minute.
+		++_overBudgetEvals;
+		if (_overBudgetEvals < _config.descendConfirmations) {
+			decision.reason = Say("hold: p95 GPU %.2f ms over %.2f ms, %d of %d confirmations",
+				decision.p95GpuMs, descendAt, _overBudgetEvals, _config.descendConfirmations);
+			return decision;
+		}
+
 		if (const auto down = NextDown(a_current)) {
+			_overBudgetEvals = 0;
 			decision.action = GovernorAction::Descend;
 			decision.target = *down;
 			decision.reason = Say(
-				"descend: p95 GPU %.2f ms over %.2f ms (%.2f ms into the budget)",
-				decision.p95GpuMs, descendAt, -decision.headroomMs);
+				"descend: p95 GPU %.2f ms over %.2f ms for %d evaluations (%.2f ms into the budget)",
+				decision.p95GpuMs, descendAt, _config.descendConfirmations, -decision.headroomMs);
 		} else {
 			// D-6: nothing cheaper exists. Say so rather than logging nothing,
 			// because "ungovernable" is a result.
@@ -253,6 +264,9 @@ GovernorDecision GovernorCore::EvaluateHeadroom(double, Preset a_current,
 		}
 		return decision;
 	}
+
+	// Anything not over the line breaks the run: a trend has to be continuous.
+	_overBudgetEvals = 0;
 
 	if (decision.p95GpuMs < climbAt) {
 		if (const auto up = NextUp(a_current)) {
@@ -265,24 +279,37 @@ GovernorDecision GovernorCore::EvaluateHeadroom(double, Preset a_current,
 			const double landAt = descendAt - _config.landingMarginMs;
 			Preset target = *up;
 			int rungs = 0;
+			double predictedTarget = 0.0;
 			for (auto candidate = up; candidate && rungs < _config.maxClimbRungs;
 				candidate = NextUp(*candidate)) {
 				const double fTarget = static_cast<double>(PresetPixelFraction(*candidate));
 				const double predicted = decision.p95GpuMs * (1.0 + _config.costK * fTarget) /
 				                         (1.0 + _config.costK * fNow);
-				// The first rung is taken on the climb test alone; further rungs
-				// have to earn it by prediction.
-				if (rungs > 0 && predicted > landAt) {
+				// D-16: every rung is checked, including the first. "Is there
+				// spare capacity now" and "will there still be after paying for
+				// this rung" differ by exactly the cost of the rung, and taking
+				// the first on the climb test alone sent one session to
+				// UltraQuality and back within eight seconds.
+				if (predicted > landAt) {
 					break;
 				}
 				target = *candidate;
+				predictedTarget = predicted;
 				++rungs;
+			}
+
+			if (rungs == 0) {
+				decision.reason = Say(
+					"hold: %.2f ms spare but one rung would land past %.2f ms",
+					decision.headroomMs, landAt);
+				return decision;
 			}
 
 			decision.action = GovernorAction::Climb;
 			decision.target = target;
-			decision.reason = Say("climb: p95 GPU %.2f ms leaves %.2f ms spare, %d rung(s) fit",
-				decision.p95GpuMs, decision.headroomMs, rungs);
+			decision.reason =
+				Say("climb: p95 GPU %.2f ms leaves %.2f ms spare, %d rung(s) fit, landing ~%.2f ms",
+					decision.p95GpuMs, decision.headroomMs, rungs, predictedTarget);
 		} else {
 			decision.reason = Say("hold: %.2f ms spare but already at maximum quality",
 				decision.headroomMs);
@@ -296,7 +323,7 @@ GovernorDecision GovernorCore::EvaluateHeadroom(double, Preset a_current,
 }
 
 GovernorDecision GovernorCore::EvaluateFrametime(double a_nowSeconds, Preset a_current,
-	GovernorDecision a_base) const
+	GovernorDecision a_base)
 {
 	auto decision = std::move(a_base);
 
