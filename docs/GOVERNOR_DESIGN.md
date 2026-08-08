@@ -224,6 +224,18 @@ count and the two agree, which is exactly the shape of the table.
 
 ### E-17 in detail — the measurement that closes roadmap step 4
 
+**These GPU figures are from the D-13a build and are superseded.** The start
+boundary was still wrong (E-22), inflating them by roughly 1.5 ms, worst at the
+cheap end. Re-measured on 2026-08-08 the same ladder reads 8.08 / 10.05 / 11.45 /
+12.77 / 13.21 / 14.25 / 15.28 ms. The table is kept because the *conclusion* it
+supports — frametime separates three rungs, GPU time separates seven — is
+unaffected, and because superseded evidence stays visible in this document
+rather than being quietly corrected.
+
+Also note what is portable here and what is not: `scale` is Community Shaders'
+own and identical everywhere; the timings belong to one GPU, one per-eye
+resolution and one mod list.
+
 | preset | scale | frametime (ms) | **GPU (ms)** | GPU P95 | headroom P95 |
 |---|---:|---:|---:|---:|---:|
 | UltraPerformance | 0.333 | 13.89 | **11.73** | 12.92 | +7.0% |
