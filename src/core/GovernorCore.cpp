@@ -256,10 +256,33 @@ GovernorDecision GovernorCore::EvaluateHeadroom(double, Preset a_current,
 
 	if (decision.p95GpuMs < climbAt) {
 		if (const auto up = NextUp(a_current)) {
+			// D-15: with an uncensored signal there is no reason to feel for
+			// the ceiling one rung at a time. Predict where each rung lands and
+			// take the highest that still sits inside the hold band - one
+			// change instead of three, each of which would cost a history reset
+			// and a visible transition.
+			const double fNow = static_cast<double>(PresetPixelFraction(a_current));
+			const double landAt = descendAt - _config.landingMarginMs;
+			Preset target = *up;
+			int rungs = 0;
+			for (auto candidate = up; candidate && rungs < _config.maxClimbRungs;
+				candidate = NextUp(*candidate)) {
+				const double fTarget = static_cast<double>(PresetPixelFraction(*candidate));
+				const double predicted = decision.p95GpuMs * (1.0 + _config.costK * fTarget) /
+				                         (1.0 + _config.costK * fNow);
+				// The first rung is taken on the climb test alone; further rungs
+				// have to earn it by prediction.
+				if (rungs > 0 && predicted > landAt) {
+					break;
+				}
+				target = *candidate;
+				++rungs;
+			}
+
 			decision.action = GovernorAction::Climb;
-			decision.target = *up;
-			decision.reason = Say("climb: p95 GPU %.2f ms leaves %.2f ms spare",
-				decision.p95GpuMs, decision.headroomMs);
+			decision.target = target;
+			decision.reason = Say("climb: p95 GPU %.2f ms leaves %.2f ms spare, %d rung(s) fit",
+				decision.p95GpuMs, decision.headroomMs, rungs);
 		} else {
 			decision.reason = Say("hold: %.2f ms spare but already at maximum quality",
 				decision.headroomMs);

@@ -74,7 +74,7 @@ TEST_CASE("no decision before the window has enough samples", "[governor]")
 	CHECK(h.decisions.empty());
 }
 
-TEST_CASE("spare GPU time climbs one rung at a time", "[governor]")
+TEST_CASE("spare GPU time climbs", "[governor]")
 {
 	Harness h{ TestConfig(), Preset::Performance };
 
@@ -86,11 +86,60 @@ TEST_CASE("spare GPU time climbs one rung at a time", "[governor]")
 		CHECK(change.action == GovernorAction::Climb);
 		CHECK(change.tier == GovernorTier::Headroom);
 	}
-
-	// D-4: upward moves are always a single rung, however much headroom there
-	// is. Each climb must land on the next scale up, never skip one.
 	CHECK(PresetScale(h.changes.front().target) > PresetScale(Preset::Performance));
-	CHECK(h.changes.front().target == Preset::Balanced);
+}
+
+TEST_CASE("a large headroom climbs several rungs in one change", "[governor]")
+{
+	// D-15: one change instead of three. Feeling for the ceiling a rung at a
+	// time was forced by censoring, and the headroom tier is not censored.
+	auto config = TestConfig();
+	Harness h{ config, Preset::UltraPerformance };
+
+	// 6 ms against a 13.889 ms budget - the scene can clearly afford more than
+	// the next rung up.
+	h.Run(6.0, 13.889, 6.0);
+
+	REQUIRE_FALSE(h.changes.empty());
+	const auto& first = h.changes.front();
+	CHECK(first.action == GovernorAction::Climb);
+	CHECK(PresetScale(first.target) > PresetScale(Preset::Performance));
+	CHECK(first.reason.find("rung(s) fit") != std::string::npos);
+}
+
+TEST_CASE("a multi-rung climb lands inside the hold band, not past it", "[governor]")
+{
+	// The failure this guards against: a jump so large that the next
+	// evaluation immediately descends, which is the oscillation D-1 exists to
+	// prevent.
+	auto config = TestConfig();
+	Harness h{ config, Preset::UltraPerformance };
+	h.Run(4.0, 13.889, 6.0);
+
+	REQUIRE_FALSE(h.changes.empty());
+	const auto target = h.changes.front().target;
+
+	// Predict the landing the same way the controller did, with the same
+	// conservative k, and require it to sit inside the band.
+	const double fFrom = PresetPixelFraction(Preset::UltraPerformance);
+	const double fTo = PresetPixelFraction(target);
+	const double predicted = 6.0 * (1.0 + config.costK * fTo) / (1.0 + config.costK * fFrom);
+	CHECK(predicted <= config.frameBudgetMs - config.marginDownMs);
+}
+
+TEST_CASE("the frametime tier still probes one rung at a time", "[governor]")
+{
+	// D-15 changes the headroom tier only. Without GPU time a climb is still a
+	// blind probe, and the only safe probe is a small one (D-4).
+	auto config = TestConfig();
+	config.probeIntervalSeconds = 1.0;
+	Harness h{ config, Preset::UltraPerformance };
+
+	h.Run(6.0, 13.889, 0.0);
+
+	REQUIRE_FALSE(h.changes.empty());
+	CHECK(h.changes.front().tier == GovernorTier::Frametime);
+	CHECK(h.changes.front().target == Preset::Performance);
 }
 
 TEST_CASE("GPU time over budget descends", "[governor]")

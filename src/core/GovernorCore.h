@@ -86,6 +86,18 @@ struct GovernorConfig
 	double marginUpMs = 3.0;    // climb when p95 GPU < budget - this
 	double marginDownMs = 0.0;  // descend when p95 GPU > budget - this
 
+	// --- multi-rung climbing on the headroom tier (D-15) ---
+	// Resolution sensitivity used to predict where a climb lands. Defaults to
+	// the HIGHEST value measured across sessions (0.61, 0.81, 0.95, 1.29), so
+	// the prediction over-states the cost of resolution and the jump
+	// under-reaches rather than overshooting.
+	double costK = 1.3;
+	// Keeps the predicted landing off the descend edge, so a model error does
+	// not immediately trigger the descent the climb just caused.
+	double landingMarginMs = 1.0;
+	// Bounds the damage from a bad k to a known number of rungs.
+	int maxClimbRungs = 3;
+
 	// Decision window and cadence.
 	double judgeWindowSeconds = 2.0;
 	double evalIntervalSeconds = 0.5;

@@ -689,6 +689,46 @@ Replay is for **rejecting** parameter sets that oscillate or sit at the wrong
 rung, not for certifying one as optimal. Phase 4's shadow mode, where the
 decisions are computed against real frames, is what confirms it.
 
+### D-15 — On the headroom tier, climb to where the scene can afford, not one rung at a time
+
+**Supersedes "upward moves are always one rung" (D-4) for the headroom tier
+only.** The frametime tier keeps it.
+
+D-4's asymmetry — fall fast, rise slow — was never a preference. It followed
+from censoring: with frametime alone, a climb is a blind probe, and the only
+safe probe is small. **That reason does not exist on the headroom tier.** GPU
+time is uncensored, the cost model is measurable (E-21), so where a climb lands
+can be predicted instead of felt for.
+
+One rung per `T_cooldown` costs more than patience. From UltraPerformance to
+Quality is three rungs and about nine seconds spent below what the scene
+affords — and **three preset changes instead of one**, each with its own history
+reset and, on builds before the upstream fix, its own white flash. Fewer, larger,
+correct changes is what D-8 asks for.
+
+**Choose the highest rung whose predicted P95 still lands inside the hold band:**
+
+```
+predicted_p95(target) = p95_now · (1 + k·f_target) / (1 + k·f_now)
+target = highest rung with predicted_p95 ≤ budget − margin_down − landing_margin
+```
+
+capped at `max_climb_rungs` in one move.
+
+**Three deliberate conservatisms**, because a climb that overshoots costs a
+descent immediately afterwards and that is the oscillation D-1 exists to
+prevent:
+
+- `k` defaults to **1.3**, the *highest* value measured across sessions (0.61,
+  0.81, 0.95, 1.29). A high `k` over-predicts the cost of resolution, so the
+  jump under-reaches rather than overshoots.
+- `landing_margin` keeps the predicted landing off the descend edge, so an
+  imperfect model does not immediately trigger the descent it just caused.
+- The cap bounds the damage from a bad `k` to a known number of rungs.
+
+**This does not touch descending**, which already jumps, nor the frametime
+tier, where the probe remains the only honest option.
+
 ### D-11 — Fork Community Shaders; do not ship the fork
 
 Measuring GPU time correctly requires brackets around the frame's render work.
