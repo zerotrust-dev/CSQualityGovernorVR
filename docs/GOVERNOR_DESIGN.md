@@ -742,27 +742,32 @@ prevent:
 **This does not touch descending**, which already jumps, nor the frametime
 tier, where the probe remains the only honest option.
 
-### D-16 — A descent must be earned, and every climb must be landing-checked
+### D-16 — Every climb is landing-checked (the descend half was withdrawn)
 
-Both follow from E-24, and both cost measured quality in the first live session.
+**Withdrawn before it shipped: "a descent must be earned".** I proposed
+requiring consecutive evaluations over the line, on the grounds that 8 of 14
+changes fired at 0.01–0.27 ms over and that this was noise. Checking the
+sequences that preceded each descent falsified it:
 
-**Descending on one evaluation is wrong.** Eight of fourteen changes fired at
-0.01–0.27 ms over the line. A P95 that crosses by 0.01 ms is noise; treating it
-as a trend costs about six dropped frames for the transition and then parks the
-player a rung lower for the next half-minute. The session sat at Balanced 56% of
-the time and reached f=0.382 where the scene mostly supported Quality's 0.444.
+```
+376.8s  13.24 → 13.06 → 13.00 → 14.14   descend
+423.1s  13.38 → 13.21 → 13.30 → 14.12   descend
+714.9s  12.98 → 13.10 → 13.37 → 14.90   descend
+```
 
-§5 already prescribes this for the frametime tier — *"drop > drop_max sustained
-for T_down"* — and it was simply not implemented for the headroom tier.
-**Descend only after `descend_confirmations` consecutive evaluations over the
-line.** At a 0.5 s cadence, two confirmations delay a genuine overload by half a
-second, which costs nothing that matters: being 0.2 ms over budget does not drop
-frames, and a real overload persists.
+Seven of eight were **rising trends crossing the line once**, not a P95
+flickering across it. Confirmations would have delayed every one of them by
+half a second and then fired anyway. The mechanism addressed a failure mode
+that was not present, and it was removed rather than kept "in case".
 
-**Climbing is asymmetric to it, deliberately.** A climb is cheap — measured: the
-six climbs in that session cost zero dropped frames, while descents cost all 42.
-So a climb still acts on the first qualifying evaluation. What changes is that
-it must pass the same landing check as the rungs above it.
+**What the same data does show** is why those descents cost so much quality.
+A rung is worth about 1.45 ms here, but the hold band is 3.0 ms wide. Descending
+at 14.1 lands near 12.6, and climbing back then requires P95 below 10.889 —
+**1.7 ms beyond where the scene was when it descended**. Every descent strands
+the controller a rung low until the scene lightens far more than it darkened.
+That is Q-11 seen from the other side, and the fix is the band, not the trigger.
+
+### D-16 (retained) — Every climb is landing-checked
 
 **Every rung of a climb is now landing-checked, including the first.** D-15
 exempted it, on the reasoning that the climb threshold had already been met.
@@ -783,9 +788,8 @@ The lesson is the recurring one. A timeline shows what the controller did, never
 what the room looked like, and inferring the second from the first produced a
 confident wrong reading for the third time in this project.
 
-Not addressed here, and deliberately: the descend threshold itself stays at
-`margin_down = 0.0`. Widening it would hide the transients rather than
-distinguish them, and the point is to tell a transient from a trend.
+Not addressed here: `margin_down` stays at 0.0. The band width is the live
+question (Q-11), and it is being answered by a sweep rather than by argument.
 
 ### D-11 — Fork Community Shaders; do not ship the fork
 

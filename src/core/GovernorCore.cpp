@@ -238,23 +238,12 @@ GovernorDecision GovernorCore::EvaluateHeadroom(double, Preset a_current,
 	const double climbAt = _config.frameBudgetMs - _config.marginUpMs;
 
 	if (decision.p95GpuMs > descendAt) {
-		// D-16: a descent has to be earned. Crossing by 0.01 ms is noise, and
-		// acting on it costs about six dropped frames for the transition plus a
-		// rung of quality for the next half-minute.
-		++_overBudgetEvals;
-		if (_overBudgetEvals < _config.descendConfirmations) {
-			decision.reason = Say("hold: p95 GPU %.2f ms over %.2f ms, %d of %d confirmations",
-				decision.p95GpuMs, descendAt, _overBudgetEvals, _config.descendConfirmations);
-			return decision;
-		}
-
 		if (const auto down = NextDown(a_current)) {
-			_overBudgetEvals = 0;
 			decision.action = GovernorAction::Descend;
 			decision.target = *down;
 			decision.reason = Say(
-				"descend: p95 GPU %.2f ms over %.2f ms for %d evaluations (%.2f ms into the budget)",
-				decision.p95GpuMs, descendAt, _config.descendConfirmations, -decision.headroomMs);
+				"descend: p95 GPU %.2f ms over %.2f ms (%.2f ms into the budget)",
+				decision.p95GpuMs, descendAt, -decision.headroomMs);
 		} else {
 			// D-6: nothing cheaper exists. Say so rather than logging nothing,
 			// because "ungovernable" is a result.
@@ -264,9 +253,6 @@ GovernorDecision GovernorCore::EvaluateHeadroom(double, Preset a_current,
 		}
 		return decision;
 	}
-
-	// Anything not over the line breaks the run: a trend has to be continuous.
-	_overBudgetEvals = 0;
 
 	if (decision.p95GpuMs < climbAt) {
 		if (const auto up = NextUp(a_current)) {
