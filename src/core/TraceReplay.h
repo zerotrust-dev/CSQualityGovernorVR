@@ -72,6 +72,16 @@ struct ReplayResult
 
 	double meanGpuMs = 0.0;
 	double p95GpuMs = 0.0;
+
+	// The preset held per decision interval, on the same grid and the same
+	// origin as OptimalPlan::trajectory, so the two can be compared slot for
+	// slot. Where the controller changed mid-interval this is the preset the
+	// most frames were rendered at.
+	//
+	// Totals say a controller reached 86% of the optimum; only this says
+	// whether the missing 14% is climbs it declined or descents it was late to,
+	// which is the difference between two opposite fixes.
+	std::vector<Preset> trajectory;
 };
 
 // The best a controller with OUR actuator could have done on this trace.

@@ -13,6 +13,7 @@
 #include "core/TraceReplay.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -244,6 +245,117 @@ void ReportModel(const CostModel& a_model)
 	}
 }
 
+// Where the gap between the controller and the optimum actually is.
+//
+// The totals say a controller reached some percentage of the achievable
+// optimum. They cannot say which mechanism to touch to close it, and the two
+// candidates want opposite fixes: pixels lost because it declined to climb, or
+// pixels spent because it was slow to come down. This walks the two
+// trajectories slot for slot and splits the difference between them.
+void ReportDivergence(const OptimalPlan& a_plan, const ReplayResult& a_controller,
+	double a_intervalSeconds)
+{
+	PrintHeader("Where the gap is");
+
+	const std::size_t n = std::min(a_plan.trajectory.size(), a_controller.trajectory.size());
+	if (n == 0) {
+		std::cout << "  No comparable intervals.\n";
+		return;
+	}
+
+	// Time share per rung, in ladder order rather than by name, so the table
+	// reads cheapest to most expensive like every other one in this report.
+	const auto rung = [](Preset a_preset) {
+		for (std::size_t i = 0; i < kPresets.size(); ++i) {
+			if (kPresets[i].preset == a_preset) {
+				return i;
+			}
+		}
+		return std::size_t{ 0 };
+	};
+	std::array<std::size_t, kPresets.size()> shareOptimum{};
+	std::array<std::size_t, kPresets.size()> shareOurs{};
+	double deficit = 0.0;   // pixels the optimum had and we did not
+	double surplus = 0.0;   // pixels we held and the optimum did not
+	std::size_t below = 0;  // intervals we sat under the optimum
+	std::size_t above = 0;
+	std::size_t same = 0;
+
+	for (std::size_t i = 0; i < n; ++i) {
+		const double optF = static_cast<double>(PresetPixelFraction(a_plan.trajectory[i]));
+		const double ourF = static_cast<double>(PresetPixelFraction(a_controller.trajectory[i]));
+		++shareOptimum[rung(a_plan.trajectory[i])];
+		++shareOurs[rung(a_controller.trajectory[i])];
+		if (ourF < optF) {
+			deficit += optF - ourF;
+			++below;
+		} else if (ourF > optF) {
+			surplus += ourF - optF;
+			++above;
+		} else {
+			++same;
+		}
+	}
+
+	const double total = static_cast<double>(n);
+	std::cout << std::fixed;
+	std::cout << "  " << n << " intervals of " << std::setprecision(1) << a_intervalSeconds
+			  << " s compared, on the same grid and origin.\n\n";
+
+	std::cout << "  preset            optimum      ours\n";
+	for (std::size_t i = 0; i < kPresets.size(); ++i) {
+		if (shareOptimum[i] == 0 && shareOurs[i] == 0) {
+			continue;
+		}
+		std::cout << "  " << std::left << std::setw(18) << PresetName(kPresets[i].preset)
+				  << std::right << std::setw(6) << std::setprecision(1)
+				  << 100.0 * shareOptimum[i] / total << "%" << std::setw(9)
+				  << 100.0 * shareOurs[i] / total << "%\n";
+	}
+	std::cout << std::left;
+
+	std::cout << "\n  agreed on " << std::setprecision(1) << 100.0 * same / total
+			  << "% of intervals; below the optimum on " << 100.0 * below / total
+			  << "%, above on " << 100.0 * above / total << "%\n";
+	std::cout << "  mean pixel fraction given up by sitting low:  " << std::setprecision(3)
+			  << deficit / total << "\n";
+	std::cout << "  mean pixel fraction held that it would not:   " << surplus / total << "\n";
+
+	// Which lever. An interval below the optimum while the optimum is climbing
+	// or already up is a climb we did not take; one above while the optimum has
+	// come down is a descent we were late to.
+	std::size_t lateClimb = 0;
+	std::size_t lateDescent = 0;
+	for (std::size_t i = 1; i < n; ++i) {
+		const double optF = static_cast<double>(PresetPixelFraction(a_plan.trajectory[i]));
+		const double optPrev = static_cast<double>(PresetPixelFraction(a_plan.trajectory[i - 1]));
+		const double ourF = static_cast<double>(PresetPixelFraction(a_controller.trajectory[i]));
+		if (optF > optPrev && ourF < optF) {
+			++lateClimb;
+		}
+		if (optF < optPrev && ourF > optF) {
+			++lateDescent;
+		}
+	}
+	std::cout << "\n  of the optimum's moves, we failed to follow " << lateClimb
+			  << " climbs and " << lateDescent << " descents within the same interval\n";
+
+	if (deficit > surplus * 2.0) {
+		std::cout << "  => the gap is dominated by pixels NOT TAKEN. The climb path is the one\n"
+					 "     to look at, not the descend path.\n";
+	} else if (surplus > deficit * 2.0) {
+		std::cout << "  => the gap is dominated by pixels HELD TOO LONG. The descend path is the\n"
+					 "     one to look at.\n";
+	} else {
+		std::cout << "  => neither direction dominates, so this is timing rather than a\n"
+					 "     threshold: both trajectories visit similar rungs, at different times.\n";
+	}
+
+	std::cout << "\n  Caveat that does not go away: the optimum has foresight. Some of what it\n"
+				 "  gains is entering a scene it already knows is cheap, which no causal\n"
+				 "  controller can do. This says which lever, not how much is reachable.\n";
+}
+
 void ReportSweep(const std::vector<SweepPoint>& a_sweep, double a_oracleGuard)
 {
 	PrintHeader("Parameter sweep");
@@ -382,6 +494,14 @@ int main(int argc, char** argv)
 	std::cout << "\n  Read this as a shortlist, not an answer. Replay has no settle latency at\n"
 				 "  the synthesised preset (E-2 measured ~1.0 s), so it flatters parameters that\n"
 				 "  change often - prefer the lowest changes/min among comparable rows.\n";
+
+	// Diffed against the shipped parameters, not the sweep's winner: the
+	// question is where THIS controller loses ground, and the winner is a
+	// shortlist entry rather than a decision.
+	if (optimum.Valid()) {
+		const auto shipped = Replay(trace, model, base, Counterfactual::Scaled);
+		ReportDivergence(optimum, shipped, base.evalIntervalSeconds);
+	}
 
 	if (!csvOut.empty()) {
 		std::ofstream out(csvOut);

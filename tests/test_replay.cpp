@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <set>
 #include <sstream>
 #include <string>
 
@@ -269,6 +270,46 @@ TEST_CASE("a shorter dwell can only help the optimum", "[replay]")
 	// constraint forbids that. Only the per-plan limit is actually implied.
 	CHECK(static_cast<double>(loose.changes) <= loose.durationSeconds / 1.0 + 1.0);
 	CHECK(static_cast<double>(tight.changes) <= tight.durationSeconds / 5.0 + 1.0);
+}
+
+TEST_CASE("both trajectories land on the same grid", "[replay]")
+{
+	// The divergence report diffs them slot for slot. If the two grids had
+	// different origins or lengths, every conclusion it draws about which lever
+	// to touch would be drawn from a comparison offset in time - and it would
+	// still print confident-looking percentages.
+	std::istringstream stream(VaryingSweep(9.9, 8.0));
+	const auto trace = ParseTrace(stream);
+	const auto model = FitCostModel(trace);
+	REQUIRE(model.Valid());
+
+	GovernorConfig config;
+	const auto controller = Replay(trace, model, config, Counterfactual::Scaled);
+	const auto plan = ComputeOptimal(trace, model, config.frameBudgetMs,
+		config.evalIntervalSeconds, config.cooldownSeconds, 0.02);
+	REQUIRE(plan.Valid());
+
+	REQUIRE_FALSE(controller.trajectory.empty());
+	REQUIRE_FALSE(plan.trajectory.empty());
+
+	// Same span of wall clock, so slot i means the same seconds in both. One
+	// interval of slack for the final partial slot.
+	const auto difference = plan.trajectory.size() > controller.trajectory.size() ?
+		plan.trajectory.size() - controller.trajectory.size() :
+		controller.trajectory.size() - plan.trajectory.size();
+	CHECK(difference <= 1);
+
+	// And the trajectory must reflect the controller's own changes rather than
+	// being a constant left behind by the empty-slot fallback. Stated as a
+	// consistency check rather than "it changed at least once", which would be
+	// an assumption about this trace instead of an invariant of the code.
+	const auto distinct =
+		std::set<Preset>(controller.trajectory.begin(), controller.trajectory.end());
+	if (controller.changes > 0) {
+		CHECK(distinct.size() > 1);
+	} else {
+		CHECK(distinct.size() == 1);
+	}
 }
 
 TEST_CASE("the optimum is never beaten by an actual controller", "[replay]")

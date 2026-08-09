@@ -264,12 +264,13 @@ OptimalPlan ComputeOptimal(const std::vector<TraceFrame>& a_trace, const CostMod
 			}
 		}
 
-		for (std::size_t i = 0; i < count; ++i) {
-			if (frames[i] > 0.0) {
-				missed.push_back(std::move(over[i]));
-				weight.push_back(frames[i]);
-			}
-		}
+		// Empty intervals are kept rather than compacted away, so index i is the
+		// i'th interval of wall clock and the trajectory can be diffed against
+		// ReplayResult::trajectory slot for slot. They cost the DP nothing: no
+		// frames to win and none to miss, so every preset scores zero and only
+		// the dwell counter advances - which is right, because time passed.
+		missed = std::move(over);
+		weight = std::move(frames);
 	}
 	if (missed.empty()) {
 		return plan;
@@ -309,6 +310,9 @@ OptimalPlan ComputeOptimal(const std::vector<TraceFrame>& a_trace, const CostMod
 	double totalFrames = 0.0;
 	for (const auto value : weight) {
 		totalFrames += value;
+	}
+	if (totalFrames <= 0.0) {
+		return plan;
 	}
 	std::size_t allowed = static_cast<std::size_t>(a_overBudgetAllowance * totalFrames);
 
@@ -496,10 +500,42 @@ ReplayResult Replay(const std::vector<TraceFrame>& a_trace, const CostModel& a_m
 	gpuSamples.reserve(a_trace.size());
 	int lastDirection = 0;
 
+	// Frames rendered at each preset, per decision interval. The origin is the
+	// first accepted row, which is the same row ComputeOptimal starts its grid
+	// at - it applies the same two filters, and the first row can never be the
+	// duplicate its extra dedupe drops.
+	const double gridInterval =
+		a_config.evalIntervalSeconds > 0.0 ? a_config.evalIntervalSeconds : 0.5;
+	double gridStart = 0.0;
+	bool haveGrid = false;
+	std::vector<std::array<double, kPresets.size()>> slotFrames;
+
+	const auto presetIndex = [](Preset a_preset) -> std::size_t {
+		for (std::size_t i = 0; i < kPresets.size(); ++i) {
+			if (kPresets[i].preset == a_preset) {
+				return i;
+			}
+		}
+		return 0;
+	};
+
 	for (const auto& row : a_trace) {
 		const auto recorded = FindPresetByPublicValue(row.presetPublicValue);
 		if (!recorded || row.gpuUs == 0) {
 			continue;
+		}
+
+		if (!haveGrid) {
+			gridStart = row.timeSeconds;
+			haveGrid = true;
+		}
+		if (row.timeSeconds >= gridStart) {
+			const std::size_t slot =
+				static_cast<std::size_t>((row.timeSeconds - gridStart) / gridInterval);
+			if (slot >= slotFrames.size()) {
+				slotFrames.resize(slot + 1, std::array<double, kPresets.size()>{});
+			}
+			slotFrames[slot][presetIndex(current)] += 1.0;
 		}
 
 		const double dt = std::clamp(row.timeSeconds - lastTime, 0.0, 1.0);
@@ -558,6 +594,29 @@ ReplayResult Replay(const std::vector<TraceFrame>& a_trace, const CostModel& a_m
 				++result.changes;
 			}
 		}
+	}
+
+	// One preset per interval: the one the most frames were rendered at. An
+	// interval with no frames inherits the previous one, because the controller
+	// did not stop holding a preset just because nothing was recorded.
+	result.trajectory.reserve(slotFrames.size());
+	Preset held = kPresets.front().preset;
+	if (const auto start = FindPresetByPublicValue(a_trace.front().presetPublicValue)) {
+		held = start->preset;
+	}
+	for (const auto& counts : slotFrames) {
+		std::size_t best = kPresets.size();
+		double bestCount = 0.0;
+		for (std::size_t i = 0; i < counts.size(); ++i) {
+			if (counts[i] > bestCount) {
+				bestCount = counts[i];
+				best = i;
+			}
+		}
+		if (best < kPresets.size()) {
+			held = kPresets[best].preset;
+		}
+		result.trajectory.push_back(held);
 	}
 
 	result.durationSeconds = heldSeconds;
