@@ -179,7 +179,7 @@ TEST_CASE("the constrained optimum obeys the actuator's limits", "[replay]")
 	const auto model = FitCostModel(trace);
 	REQUIRE(model.Valid());
 
-	const auto plan = ComputeOptimal(trace, model, 13.889, 0.5, 3.0);
+	const auto plan = ComputeOptimal(trace, model, 13.889, 0.5, 3.0, 2.0, 0.02);
 	REQUIRE(plan.Valid());
 
 	// It cannot beat the ladder's own ceiling, and it must not sit at the floor.
@@ -213,12 +213,42 @@ TEST_CASE("a shorter dwell can only help the optimum", "[replay]")
 	const auto model = FitCostModel(trace);
 	REQUIRE(model.Valid());
 
-	const auto loose = ComputeOptimal(trace, model, 13.889, 0.5, 1.0);
-	const auto tight = ComputeOptimal(trace, model, 13.889, 0.5, 5.0);
+	const auto loose = ComputeOptimal(trace, model, 13.889, 0.5, 1.0, 2.0, 0.02);
+	const auto tight = ComputeOptimal(trace, model, 13.889, 0.5, 5.0, 2.0, 0.02);
 	REQUIRE(loose.Valid());
 	REQUIRE(tight.Valid());
 
 	CHECK(loose.timeWeightedPixelFraction >= tight.timeWeightedPixelFraction - 1e-9);
 	// And the tighter dwell cannot need more changes than the looser one allows.
 	CHECK(tight.changes <= loose.changes);
+}
+
+TEST_CASE("the optimum is never beaten by an actual controller", "[replay]")
+{
+	// The invariant that matters, and the one whose absence let a broken
+	// optimum ship: a bound below an achievable trajectory is not a bound.
+	//
+	// The first version reported 0.302 on a capture where the controller
+	// achieved 0.570, because it judged feasibility on a 0.5 s P95 while the
+	// controller uses 2 s, and forbade any interval over budget while the
+	// controller tolerates a few percent. Both made it stricter than the thing
+	// it was supposed to bound.
+	std::istringstream stream(SyntheticSweep(9.9, 8.0));
+	const auto trace = ParseTrace(stream);
+	const auto model = FitCostModel(trace);
+	REQUIRE(model.Valid());
+
+	GovernorConfig config;
+	const auto controller = Replay(trace, model, config, Counterfactual::Scaled);
+	const auto plan = ComputeOptimal(trace, model, config.frameBudgetMs,
+		config.evalIntervalSeconds, config.cooldownSeconds, config.judgeWindowSeconds,
+		std::max(controller.overBudgetRate, 0.02));
+
+	REQUIRE(plan.Valid());
+	REQUIRE(controller.timeWeightedPixelFraction > 0.0);
+
+	// Allowed the same over-budget rate the controller actually used, the
+	// optimum must be at least as good. A small tolerance covers the interval
+	// grid, not a systematic gap.
+	CHECK(plan.timeWeightedPixelFraction >= controller.timeWeightedPixelFraction - 0.02);
 }

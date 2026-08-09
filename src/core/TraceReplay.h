@@ -98,11 +98,17 @@ struct OptimalPlan
 	[[nodiscard]] bool Valid() const noexcept { return durationSeconds > 0.0; }
 };
 
-// Computes it. a_intervalSeconds is the decision cadence; a_minDwellSeconds the
-// cooldown the actuator imposes.
+// Computes it. a_intervalSeconds is the decision cadence, a_minDwellSeconds the
+// cooldown, a_windowSeconds the window the P95 is taken over, and
+// a_overBudgetAllowance the fraction of intervals it may spend over budget.
+//
+// All four must match what the controller actually does, or the result is not a
+// bound. Computed with a 0.5 s window and a zero allowance it returned 0.302
+// against a controller achieving 0.570 on the same trace - an "optimum" below an
+// achievable trajectory, which is only ever a statement about the optimiser.
 [[nodiscard]] OptimalPlan ComputeOptimal(const std::vector<TraceFrame>& a_trace,
 	const CostModel& a_model, double a_budgetMs, double a_intervalSeconds,
-	double a_minDwellSeconds);
+	double a_minDwellSeconds, double a_windowSeconds, double a_overBudgetAllowance);
 
 // Parses a *_frames.csv capture. Unknown or malformed rows are skipped rather
 // than throwing: a capture truncated by a crash is still worth replaying, and

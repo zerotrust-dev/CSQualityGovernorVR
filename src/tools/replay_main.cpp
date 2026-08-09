@@ -208,7 +208,7 @@ void ReportBounds(const std::vector<TraceFrame>& a_trace, const CostModel& a_mod
 	// The honest target: the same foresight, but obeying our actuator's limits.
 	GovernorConfig config;
 	const auto plan = ComputeOptimal(a_trace, a_model, a_budgetMs, config.evalIntervalSeconds,
-		config.cooldownSeconds);
+		config.cooldownSeconds, config.judgeWindowSeconds, 0.02);
 	if (plan.Valid()) {
 		std::cout << "\n  CONSTRAINED OPTIMUM (one lever, " << std::setprecision(1)
 				  << config.cooldownSeconds << " s minimum dwell, " << config.evalIntervalSeconds
@@ -356,7 +356,7 @@ int main(int argc, char** argv)
 	std::cout << "  constraint: over budget <= " << 100.0 * kOverBudgetLimit << "% of frames\n\n";
 
 	const auto optimum = ComputeOptimal(trace, model, base.frameBudgetMs, base.evalIntervalSeconds,
-		base.cooldownSeconds);
+		base.cooldownSeconds, base.judgeWindowSeconds, kOverBudgetLimit);
 	for (std::size_t i = 0; i < std::min<std::size_t>(5, ranked.size()); ++i) {
 		const auto& point = ranked[i];
 		std::cout << std::fixed << std::setprecision(2) << "  " << i + 1 << ". marginUp "
