@@ -791,6 +791,62 @@ confident wrong reading for the third time in this project.
 Not addressed here: `margin_down` stays at 0.0. The band width is the live
 question (Q-11), and it is being answered by a sweep rather than by argument.
 
+### D-19 (PROPOSED, not implemented) — A step is only measured once the transition has settled
+
+**Challenges:** the learning half of D-18 (and D-17 before it). Not the per-step
+table itself, which E-31 vindicates — the table is the reason the residual error
+is 5% rather than E-26's factor of four. What is challenged is *when* the second
+half of the two-point measurement is taken.
+
+**The evidence: E-31.** `Quality → UltraQuality` is believed 5% dearer than the
+capture shows, across 7 observations, on the step the divergence table says is
+under-used. Seven observations converging high is not scatter. Every other step
+sits on a single observation and lands on both sides, which is what scene
+movement does to one measurement.
+
+**The mechanism.** `NotifyApplied` clears the window, and an evaluation may
+proceed once `minSamples` = 30 frames are in it — about **0.42 s** at 72 fps.
+Settle is **~1.0 s** (E-2). So the post-change P95 can be taken entirely inside
+the transition transient. Settle only ever *adds* GPU time, so the error has a
+sign: every ratio measured this way is inflated, always. That is the shape E-31
+shows — a well-sampled step biased one way while poorly-sampled ones scatter.
+
+Note what this does NOT claim: it is not that the transient is large, but that
+its contribution never cancels, so smoothing more observations converges on the
+wrong number rather than the right one. More data makes this worse, not better.
+
+**The proposal.** Close the two-point calibration only when the window contains
+no frames from before `T_settle` after the change — either by holding
+`_awaitingCalibration` until `now ≥ _lastChangeAt + T_settle + T_judge`, or by
+reusing the settle detector the sweep already has and refusing to learn until it
+reports settled. The second is preferable: the mechanism exists, is tested, and
+measures the thing rather than assuming a constant.
+
+**Expected effect, stated in advance so it can be checked.** The refusal band
+11.25–11.80 ms covers ~10% of the light session, so this should recover part of
+the 20 unfollowed climbs and some of the 0.083 pixel gap. It should **not**
+close that gap: at `landingMargin` 0.0 — a far larger relaxation than correcting
+5% — the light capture still only reaches 0.533, and does it at 5.4% over budget.
+If a replay after this change shows the gap closing substantially, that is a
+reason to distrust the change, not to celebrate it.
+
+**Cost if wrong.** The controller learns more slowly, since some transitions
+produce no measurement at all. Against that, D-18's seeds are deliberately
+conservative and a step that is never measured keeps one — so the failure mode
+is staying at the seed, not adopting a worse number.
+
+**What would refute this.** A replay in which the well-sampled step's learned
+ratio does not move toward its observed value once settle frames are excluded.
+That would mean the bias comes from somewhere else — the P95 window length, or
+`_p95BeforeChange` being stale rather than the after-value being early — and the
+proposal should be withdrawn rather than tuned.
+
+**Not yet decided:** the evidence is 7 observations on one step, from two
+captures taken on one machine on one evening. That is enough to establish a
+sign, not to size a correction. It is written here first because the procedure
+above requires it, and because a change to how the controller learns is exactly
+the kind that gets made twice if the reasoning is not recorded once.
+
 ### D-18 — A measured cost ratio per step, not a fitted `k`
 
 **Supersedes D-17's single learnt `k`.** Same idea — measure rather than assume —
@@ -1387,6 +1443,7 @@ includes questions about somebody else's instrument.
 
 ## 8. Open Questions
 
+| E-31 | **The one step ratio with real evidence behind it is biased high, and the poorly-sampled ones are just noise.** Learned ratios at the end of a replay, against the same step measured from the dwell buckets: `Quality → UltraQuality` reads **1.146 believed vs 1.092 observed on 7 observations** (light) and **1.129 vs 1.034 on 2** (marginal) — pessimistic in both, and the only step that is. Every other step rests on **exactly one** observation: Perf→Bal 1.056 vs 1.114 and 1.024 vs 1.139, Bal→Qual 1.047 vs 1.087 and 1.165 vs 1.116 — scattering both directions, which is what a single transition contaminated by scene movement looks like. Averaging seven cancels the scene and leaves what is systematic. Consequence: with the gate at `budget − landingMargin` = 12.89 ms, believing 1.146 instead of 1.092 refuses every climb whose P95 lies in **11.25–11.80 ms**, about **10%** of the light session — and `Quality → UltraQuality` is exactly the step the divergence table shows under-used (20.9% of intervals against the optimum's 40.2%). | CI run on `3f226d5`, both captures |
 | E-30 | **The optimum was never reporting the value its own table had found — the trajectory was reconstructed by guesswork.** With E-29's exact DP in place the monotonicity check still failed, and wider: **0.382** at a 1.0 s dwell against **0.410** at 5.0 s. Cause, present since the first version and therefore underneath E-28's published figures too: the backpointer stored only the predecessor's *preset*, and the dwell counter was re-derived as `held == 0 ? dwell : held - 1`. That derivation is not unique — `nextHeld = min(held + 1, dwell)` means a state at `held == dwell` has two possible predecessors, `dwell - 1` and `dwell` itself, already capped. On a wrong guess the walk lands on a cell that was never written, breaks out, and leaves the whole earlier prefix at preset index 0 — the cheapest rung — so the reported figure sat below the optimum the table had actually computed, by an amount varying with the dwell. Now stores the full predecessor state; nothing is re-derived except the budget, which genuinely is unique. **Lesson: two of these three defects were in the reporting path, not the search.** A DP that computes the right answer and then misreads its own table is indistinguishable, from the outside, from one that computes the wrong answer. | CI run 31324364163, commit `adc7b70` |
 | E-29 | **Pricing the miss allowance cannot solve this problem exactly — the constraint has to be carried.** With E-28 fixed, the monotonicity check failed: a **1.0 s** dwell scored **0.392** where a **5.0 s** dwell scored **0.401**, though every trajectory available to the slower solver is available to the faster one. Cause: penalty bisection is Lagrangian relaxation of an integer programme and has a duality gap. At a given price the DP returns *some* optimum of `pixels − λ·missed`; with more freedom it can step straight past the allowance into the interior of the feasible region, spending fewer permitted misses and taking fewer pixels with them, and no λ enumerates the skipped points. Replaced with an exact DP carrying consumed misses as a third state dimension, so the constraint binds by construction. The flat synthetic trace had too few distinct trade-off points to land in the gap; `VaryingSweep` exposed it immediately. Also retired the companion assertion `tight.changes <= loose.changes` — it is not a theorem, since a near-constant trajectory can be optimal under the loose dwell and use fewer changes than the tight optimum. | CI run 31319876314, commit `654da2f` |
 | E-28 | **The first published constrained optimum was not a bound, and the report said so on its face.** CI run 31317210118 ranked the best parameter row at **108% of optimum** on the light capture and **110%** on the marginal one — a controller above its own ceiling, which is arithmetically impossible and therefore a defect in the optimiser. Cause: `ComputeOptimal` counted an interval as over budget when its windowed **P95** exceeded the budget, while `Replay` counts individual **frames**. A window whose P95 only just fits still misses one frame in twenty, so the same nominal 2% allowance bought the optimiser almost no slack and the controller a real one. Both now count frames. The bad figures were 0.470 (against an achieved 0.506) and 0.517 (against 0.570); **no conclusion had been drawn from them**, which is the only reason this is an erratum and not a retraction. The synthetic test could not have caught it: `SyntheticSweep` gives every frame at a preset an identical GPU time, so P95, mean and each frame coincide and the two definitions are indistinguishable. A `VaryingSweep` with real within-preset spread now backs the invariant. | CI run 31317210118, commit `41cdab9` |
@@ -1413,6 +1470,34 @@ available (E-6).
 ---
 
 ## Decision Log
+
+**2026-08-09 — D-19 proposed, awaiting a ruling: learn a step ratio only after
+the transition has settled (E-31). No code written.**
+
+Instrumenting what the controller believes a rung costs, beside what the capture
+shows, found one step with real evidence behind it and a bias on it.
+`Quality → UltraQuality` reads 1.146 against an observed 1.092 over **seven**
+observations on the light capture, and 1.129 against 1.034 over two on the
+marginal one. Every other step rests on a single observation and scatters both
+ways, so those are noise and were nearly read as findings before the observation
+counts were added.
+
+The mechanism is that the post-change P95 can be taken ~0.42 s after a change
+(`minSamples` 30 at 72 fps) while settle takes ~1.0 s (E-2), so the measurement
+lands inside the transient. Settle only adds GPU time, so the error has a sign
+and never cancels — which is why the well-sampled step is biased while the
+one-shot steps are merely noisy. More observations converge on the wrong number.
+
+Consequence: with the gate at 12.89 ms, the inflated belief refuses every climb
+whose P95 falls in 11.25–11.80 ms — about 10% of the light session, on the step
+the divergence table shows most under-used (20.9% of intervals against the
+optimum's 40.2%).
+
+**Not implemented.** The evidence is seven observations of one step from two
+captures on one machine on one evening: enough to establish a sign, not to size
+a correction. Written up first because this document requires the argument
+before the code, and recorded with its expected effect and its refutation
+condition so the follow-up cannot be graded on a moving target.
 
 **2026-08-06 (later) — The external comparison found what internal evidence
 could not (E-18). Close boundary moves to the compositor submit (D-13a); step 4
