@@ -312,6 +312,47 @@ TEST_CASE("both trajectories land on the same grid", "[replay]")
 	}
 }
 
+TEST_CASE("the divergence breakdown adds up to the gap it explains", "[replay]")
+{
+	// The identity: deficit - surplus == optimum - ours, exactly.
+	//
+	// The first version of this report did not have it. It attributed each
+	// interval to the preset most of its frames used, which credits a
+	// controller that changed mid-interval with pixels it never rendered, and
+	// it accounted for 0.033 of an 0.081 gap while printing both numbers as
+	// though they described the same thing. A breakdown that does not sum to
+	// its own headline lets a reader take whichever figure suits.
+	std::istringstream stream(VaryingSweep(9.9, 8.0));
+	const auto trace = ParseTrace(stream);
+	const auto model = FitCostModel(trace);
+	REQUIRE(model.Valid());
+
+	GovernorConfig config;
+	const auto controller = Replay(trace, model, config, Counterfactual::Scaled);
+	const auto plan = ComputeOptimal(trace, model, config.frameBudgetMs,
+		config.evalIntervalSeconds, config.cooldownSeconds, 0.02);
+	REQUIRE(plan.Valid());
+
+	const auto gap = ComputeDivergence(plan, controller);
+	REQUIRE(gap.Valid());
+
+	CHECK((gap.optimumPixelFraction - gap.controllerPixelFraction) ==
+		Approx(gap.deficit - gap.surplus).margin(1e-9));
+
+	// The optimum side must reproduce the plan's own headline, or the two are
+	// weighting different things and the comparison is not against the number
+	// reported elsewhere in the report.
+	CHECK(gap.optimumPixelFraction == Approx(plan.timeWeightedPixelFraction).margin(1e-9));
+
+	// Both halves are non-negative by construction; a negative one would mean
+	// the split had picked up a sign error and the identity held by accident.
+	CHECK(gap.deficit >= 0.0);
+	CHECK(gap.surplus >= 0.0);
+
+	// The interval classification must cover every interval exactly once.
+	CHECK(gap.below + gap.above + gap.level == gap.intervals);
+}
+
 TEST_CASE("the optimum is never beaten by an actual controller", "[replay]")
 {
 	// The invariant that matters, and the one whose absence let a broken

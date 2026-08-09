@@ -464,6 +464,7 @@ OptimalPlan ComputeOptimal(const std::vector<TraceFrame>& a_trace, const CostMod
 		over += static_cast<double>(missed[i][path[i]]);
 		frames += weight[i];
 		plan.trajectory.push_back(kPresets[path[i]].preset);
+		plan.intervalFrames.push_back(weight[i]);
 		if (i > 0 && path[i] != path[i - 1]) {
 			++plan.changes;
 		}
@@ -474,6 +475,90 @@ OptimalPlan ComputeOptimal(const std::vector<TraceFrame>& a_trace, const CostMod
 	}
 	plan.durationSeconds = static_cast<double>(path.size()) * a_intervalSeconds;
 	return plan;
+}
+
+Divergence ComputeDivergence(const OptimalPlan& a_plan, const ReplayResult& a_controller)
+{
+	Divergence out;
+	const std::size_t n =
+		std::min(a_plan.trajectory.size(), a_controller.intervalPixelFraction.size());
+	if (n == 0 || a_plan.intervalFrames.size() < n) {
+		return out;
+	}
+
+	out.optimumRungs.assign(kPresets.size(), 0);
+	out.controllerRungs.assign(kPresets.size(), 0);
+
+	const auto rung = [](Preset a_preset) {
+		for (std::size_t i = 0; i < kPresets.size(); ++i) {
+			if (kPresets[i].preset == a_preset) {
+				return i;
+			}
+		}
+		return std::size_t{ 0 };
+	};
+
+	// One set of weights for both sides - the plan's, which are the ones behind
+	// its headline. Weighting each side by its own would make the difference of
+	// the means stop equalling the mean of the differences, and the identity
+	// this exists to guarantee would quietly fail.
+	double frames = 0.0;
+	double optimumPixels = 0.0;
+	double controllerPixels = 0.0;
+	double deficit = 0.0;
+	double surplus = 0.0;
+
+	for (std::size_t i = 0; i < n; ++i) {
+		const double w = a_plan.intervalFrames[i];
+		const double optF = static_cast<double>(PresetPixelFraction(a_plan.trajectory[i]));
+		const double ourF = a_controller.intervalPixelFraction[i];
+
+		frames += w;
+		optimumPixels += w * optF;
+		controllerPixels += w * ourF;
+		if (ourF < optF) {
+			deficit += w * (optF - ourF);
+		} else if (ourF > optF) {
+			surplus += w * (ourF - optF);
+		}
+
+		// Rung shares stay interval-counted rather than frame-weighted: the
+		// question they answer is "how much of the session did it sit here",
+		// and an interval is the unit the controller actually decides in.
+		++out.optimumRungs[rung(a_plan.trajectory[i])];
+		if (i < a_controller.trajectory.size()) {
+			++out.controllerRungs[rung(a_controller.trajectory[i])];
+		}
+
+		constexpr double kLevel = 1e-9;
+		if (ourF < optF - kLevel) {
+			++out.below;
+		} else if (ourF > optF + kLevel) {
+			++out.above;
+		} else {
+			++out.level;
+		}
+
+		if (i > 0) {
+			const double optPrev =
+				static_cast<double>(PresetPixelFraction(a_plan.trajectory[i - 1]));
+			if (optF > optPrev && ourF < optF) {
+				++out.unfollowedClimbs;
+			}
+			if (optF < optPrev && ourF > optF) {
+				++out.unfollowedDescents;
+			}
+		}
+	}
+
+	out.intervals = n;
+	if (frames > 0.0) {
+		out.optimumPixelFraction = optimumPixels / frames;
+		out.controllerPixelFraction = controllerPixels / frames;
+		out.deficit = deficit / frames;
+		out.surplus = surplus / frames;
+	}
+	return out;
 }
 
 ReplayResult Replay(const std::vector<TraceFrame>& a_trace, const CostModel& a_model,
@@ -600,6 +685,7 @@ ReplayResult Replay(const std::vector<TraceFrame>& a_trace, const CostModel& a_m
 	// interval with no frames inherits the previous one, because the controller
 	// did not stop holding a preset just because nothing was recorded.
 	result.trajectory.reserve(slotFrames.size());
+	result.intervalPixelFraction.reserve(slotFrames.size());
 	Preset held = kPresets.front().preset;
 	if (const auto start = FindPresetByPublicValue(a_trace.front().presetPublicValue)) {
 		held = start->preset;
@@ -607,16 +693,25 @@ ReplayResult Replay(const std::vector<TraceFrame>& a_trace, const CostModel& a_m
 	for (const auto& counts : slotFrames) {
 		std::size_t best = kPresets.size();
 		double bestCount = 0.0;
+		double frames = 0.0;
+		double pixels = 0.0;
 		for (std::size_t i = 0; i < counts.size(); ++i) {
 			if (counts[i] > bestCount) {
 				bestCount = counts[i];
 				best = i;
 			}
+			frames += counts[i];
+			pixels += counts[i] * static_cast<double>(kPresets[i].scale) *
+			          static_cast<double>(kPresets[i].scale);
 		}
 		if (best < kPresets.size()) {
 			held = kPresets[best].preset;
 		}
 		result.trajectory.push_back(held);
+		// An interval with no frames inherits the held preset's fraction: the
+		// controller did not stop holding it just because nothing was recorded.
+		result.intervalPixelFraction.push_back(
+			frames > 0.0 ? pixels / frames : static_cast<double>(PresetPixelFraction(held)));
 	}
 
 	result.durationSeconds = heldSeconds;

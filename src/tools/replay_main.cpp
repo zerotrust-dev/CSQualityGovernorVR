@@ -250,110 +250,145 @@ void ReportModel(const CostModel& a_model)
 // The totals say a controller reached some percentage of the achievable
 // optimum. They cannot say which mechanism to touch to close it, and the two
 // candidates want opposite fixes: pixels lost because it declined to climb, or
-// pixels spent because it was slow to come down. This walks the two
-// trajectories slot for slot and splits the difference between them.
-void ReportDivergence(const OptimalPlan& a_plan, const ReplayResult& a_controller,
-	double a_intervalSeconds)
+// pixels spent because it was slow to come down.
+//
+// The arithmetic lives in ComputeDivergence so the identity it rests on -
+// deficit minus surplus equals the gap - is guaranteed by a test rather than by
+// this function happening to get it right.
+void ReportDivergence(const Divergence& a_gap, double a_intervalSeconds,
+	double a_controllerHeadline)
 {
 	PrintHeader("Where the gap is");
 
-	const std::size_t n = std::min(a_plan.trajectory.size(), a_controller.trajectory.size());
-	if (n == 0) {
+	if (!a_gap.Valid()) {
 		std::cout << "  No comparable intervals.\n";
 		return;
 	}
 
-	// Time share per rung, in ladder order rather than by name, so the table
-	// reads cheapest to most expensive like every other one in this report.
-	const auto rung = [](Preset a_preset) {
-		for (std::size_t i = 0; i < kPresets.size(); ++i) {
-			if (kPresets[i].preset == a_preset) {
-				return i;
-			}
-		}
-		return std::size_t{ 0 };
-	};
-	std::array<std::size_t, kPresets.size()> shareOptimum{};
-	std::array<std::size_t, kPresets.size()> shareOurs{};
-	double deficit = 0.0;   // pixels the optimum had and we did not
-	double surplus = 0.0;   // pixels we held and the optimum did not
-	std::size_t below = 0;  // intervals we sat under the optimum
-	std::size_t above = 0;
-	std::size_t same = 0;
-
-	for (std::size_t i = 0; i < n; ++i) {
-		const double optF = static_cast<double>(PresetPixelFraction(a_plan.trajectory[i]));
-		const double ourF = static_cast<double>(PresetPixelFraction(a_controller.trajectory[i]));
-		++shareOptimum[rung(a_plan.trajectory[i])];
-		++shareOurs[rung(a_controller.trajectory[i])];
-		if (ourF < optF) {
-			deficit += optF - ourF;
-			++below;
-		} else if (ourF > optF) {
-			surplus += ourF - optF;
-			++above;
-		} else {
-			++same;
-		}
-	}
-
-	const double total = static_cast<double>(n);
+	const double total = static_cast<double>(a_gap.intervals);
 	std::cout << std::fixed;
-	std::cout << "  " << n << " intervals of " << std::setprecision(1) << a_intervalSeconds
-			  << " s compared, on the same grid and origin.\n\n";
+	std::cout << "  " << a_gap.intervals << " intervals of " << std::setprecision(1)
+			  << a_intervalSeconds << " s compared, on the same grid and origin.\n\n";
 
 	std::cout << "  preset            optimum      ours\n";
 	for (std::size_t i = 0; i < kPresets.size(); ++i) {
-		if (shareOptimum[i] == 0 && shareOurs[i] == 0) {
+		if (a_gap.optimumRungs[i] == 0 && a_gap.controllerRungs[i] == 0) {
 			continue;
 		}
 		std::cout << "  " << std::left << std::setw(18) << PresetName(kPresets[i].preset)
 				  << std::right << std::setw(6) << std::setprecision(1)
-				  << 100.0 * shareOptimum[i] / total << "%" << std::setw(9)
-				  << 100.0 * shareOurs[i] / total << "%\n";
+				  << 100.0 * a_gap.optimumRungs[i] / total << "%" << std::setw(9)
+				  << 100.0 * a_gap.controllerRungs[i] / total << "%\n";
 	}
 	std::cout << std::left;
 
-	std::cout << "\n  agreed on " << std::setprecision(1) << 100.0 * same / total
-			  << "% of intervals; below the optimum on " << 100.0 * below / total
-			  << "%, above on " << 100.0 * above / total << "%\n";
-	std::cout << "  mean pixel fraction given up by sitting low:  " << std::setprecision(3)
-			  << deficit / total << "\n";
-	std::cout << "  mean pixel fraction held that it would not:   " << surplus / total << "\n";
+	std::cout << "\n  level with the optimum on " << std::setprecision(1)
+			  << 100.0 * a_gap.level / total << "% of intervals; below on "
+			  << 100.0 * a_gap.below / total << "%, above on " << 100.0 * a_gap.above / total
+			  << "%\n\n";
 
-	// Which lever. An interval below the optimum while the optimum is climbing
-	// or already up is a climb we did not take; one above while the optimum has
-	// come down is a descent we were late to.
-	std::size_t lateClimb = 0;
-	std::size_t lateDescent = 0;
-	for (std::size_t i = 1; i < n; ++i) {
-		const double optF = static_cast<double>(PresetPixelFraction(a_plan.trajectory[i]));
-		const double optPrev = static_cast<double>(PresetPixelFraction(a_plan.trajectory[i - 1]));
-		const double ourF = static_cast<double>(PresetPixelFraction(a_controller.trajectory[i]));
-		if (optF > optPrev && ourF < optF) {
-			++lateClimb;
-		}
-		if (optF < optPrev && ourF > optF) {
-			++lateDescent;
-		}
+	// Printed as an equation because it is one. If these ever stop adding up,
+	// the breakdown is wrong and should not be read.
+	std::cout << std::setprecision(3);
+	std::cout << "  optimum        " << a_gap.optimumPixelFraction << "\n";
+	std::cout << "  ours           " << a_gap.controllerPixelFraction << "\n";
+	std::cout << "  gap            " << a_gap.optimumPixelFraction - a_gap.controllerPixelFraction
+			  << "  =  " << a_gap.deficit << " not taken  -  " << a_gap.surplus
+			  << " held too long\n";
+
+	// The sweep reports the controller time-weighted over its own samples; this
+	// is frame-weighted on the plan's grid. They are close but not identical,
+	// and saying so is cheaper than someone finding the discrepancy later.
+	const double drift = a_gap.controllerPixelFraction - a_controllerHeadline;
+	if (std::abs(drift) > 0.005) {
+		std::cout << "\n  (the sweep's time-weighted figure for the same run is "
+				  << a_controllerHeadline << ", a\n   difference of " << std::abs(drift)
+				  << " from weighting and from rows the plan deduplicates)\n";
 	}
-	std::cout << "\n  of the optimum's moves, we failed to follow " << lateClimb
-			  << " climbs and " << lateDescent << " descents within the same interval\n";
 
-	if (deficit > surplus * 2.0) {
+	std::cout << "\n  of the optimum's moves, we failed to follow " << a_gap.unfollowedClimbs
+			  << " climbs and " << a_gap.unfollowedDescents
+			  << " descents within the same interval\n";
+
+	if (a_gap.deficit > a_gap.surplus * 2.0) {
 		std::cout << "  => the gap is dominated by pixels NOT TAKEN. The climb path is the one\n"
 					 "     to look at, not the descend path.\n";
-	} else if (surplus > deficit * 2.0) {
+	} else if (a_gap.surplus > a_gap.deficit * 2.0) {
 		std::cout << "  => the gap is dominated by pixels HELD TOO LONG. The descend path is the\n"
 					 "     one to look at.\n";
 	} else {
-		std::cout << "  => neither direction dominates, so this is timing rather than a\n"
-					 "     threshold: both trajectories visit similar rungs, at different times.\n";
+		std::cout << "  => neither direction dominates by 2x, so read the two terms above\n"
+					 "     directly rather than taking a verdict from this line.\n";
 	}
 
 	std::cout << "\n  Caveat that does not go away: the optimum has foresight. Some of what it\n"
 				 "  gains is entering a scene it already knows is cheap, which no causal\n"
 				 "  controller can do. This says which lever, not how much is reachable.\n";
+}
+
+// Is the landing check what is holding the controller a rung low?
+//
+// The divergence table says the gap is pixels never taken, concentrated on the
+// upper-middle rungs. D-16's landing check is the gate on exactly those: it
+// predicts where a climb lands using the learned step ratio and refuses the
+// climb unless the landing clears the budget by landingMarginMs. E-26 measured
+// the Quality -> UltraQuality step as the one where the cost model was most
+// wrong, which is the step this would block first.
+//
+// Swept separately rather than as a third dimension of the main table: that
+// would multiply sixty rows by five and bury the two parameters that are
+// already understood.
+void ReportLandingCheck(const std::vector<TraceFrame>& a_trace, const CostModel& a_model,
+	const GovernorConfig& a_base, const OptimalPlan& a_optimum, double a_overBudgetLimit)
+{
+	PrintHeader("Landing check sensitivity");
+
+	std::cout << "  At the shipped marginUp/marginDown. landingMarginMs is the clearance a\n"
+				 "  predicted landing must have; maxClimbRungs bounds one change's reach.\n\n";
+	std::cout << "  landing  rungs | pixels  over%  chg/min  Hoshipa+  | % of optimum\n";
+
+	const double optimumPixels = a_optimum.timeWeightedPixelFraction;
+	for (const double landing : { -1.0, 0.0, 0.5, 1.0, 1.5, 2.0 }) {
+		for (const int rungs : { 1, 3, 6 }) {
+			GovernorConfig config = a_base;
+			config.landingMarginMs = landing;
+			config.maxClimbRungs = rungs;
+			const auto result = Replay(a_trace, a_model, config, Counterfactual::Scaled);
+
+			// Time spent at UltraQuality or above - the rungs the controller is
+			// not reaching. Moving this is the point of the exercise; moving
+			// only the total could be a wash across the whole ladder.
+			std::size_t high = 0;
+			for (const auto preset : result.trajectory) {
+				if (PresetPixelFraction(preset) > 0.5) {
+					++high;
+				}
+			}
+			const double highShare = result.trajectory.empty() ?
+				0.0 :
+				100.0 * static_cast<double>(high) / static_cast<double>(result.trajectory.size());
+
+			std::cout << "  " << std::fixed << std::setprecision(2) << std::setw(6) << landing
+					  << std::setw(7) << rungs << " |" << std::setprecision(3) << std::setw(7)
+					  << result.timeWeightedPixelFraction << std::setprecision(1) << std::setw(7)
+					  << 100.0 * result.overBudgetRate << "%" << std::setprecision(2)
+					  << std::setw(8) << result.changesPerMinute << std::setprecision(1)
+					  << std::setw(9) << highShare << "%  |";
+			if (optimumPixels > 0.0) {
+				std::cout << std::setprecision(0) << std::setw(11)
+						  << 100.0 * result.timeWeightedPixelFraction / optimumPixels << "%";
+			}
+			if (result.overBudgetRate > a_overBudgetLimit) {
+				std::cout << "  (violates constraint)";
+			}
+			std::cout << "\n";
+		}
+	}
+
+	std::cout << "\n  The shipped row is landing 1.00 / rungs 3. A row that lifts Hoshipa+ time\n"
+				 "  without breaching the constraint is evidence the gate is too tight; one\n"
+				 "  that lifts pixels only by going over budget is not - that is the check\n"
+				 "  doing its job.\n";
 }
 
 void ReportSweep(const std::vector<SweepPoint>& a_sweep, double a_oracleGuard)
@@ -500,7 +535,9 @@ int main(int argc, char** argv)
 	// shortlist entry rather than a decision.
 	if (optimum.Valid()) {
 		const auto shipped = Replay(trace, model, base, Counterfactual::Scaled);
-		ReportDivergence(optimum, shipped, base.evalIntervalSeconds);
+		ReportDivergence(ComputeDivergence(optimum, shipped), base.evalIntervalSeconds,
+			shipped.timeWeightedPixelFraction);
+		ReportLandingCheck(trace, model, base, optimum, kOverBudgetLimit);
 	}
 
 	if (!csvOut.empty()) {

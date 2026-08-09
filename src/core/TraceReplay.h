@@ -82,6 +82,13 @@ struct ReplayResult
 	// whether the missing 14% is climbs it declined or descents it was late to,
 	// which is the difference between two opposite fixes.
 	std::vector<Preset> trajectory;
+
+	// The frame-weighted mean pixel fraction actually rendered in each of those
+	// intervals. Not derivable from `trajectory`: that names the preset the most
+	// frames used, and attributing a whole interval to it credits a controller
+	// that changed mid-interval with pixels it did not render. Doing exactly
+	// that made the first divergence report account for 0.033 of an 0.081 gap.
+	std::vector<double> intervalPixelFraction;
 };
 
 // The best a controller with OUR actuator could have done on this trace.
@@ -104,9 +111,49 @@ struct OptimalPlan
 	// The chosen preset per decision interval, so a controller's trajectory can
 	// be diffed against it rather than only its totals.
 	std::vector<Preset> trajectory;
+	// Frames in each of those intervals. These are the weights behind
+	// timeWeightedPixelFraction, exposed so a comparison against a controller
+	// can use the same ones and reconcile with the headline instead of
+	// approximating it.
+	std::vector<double> intervalFrames;
 
 	[[nodiscard]] bool Valid() const noexcept { return durationSeconds > 0.0; }
 };
+
+// The difference between a controller and the optimum, decomposed.
+//
+// deficit and surplus are the two halves of the same gap and satisfy
+//   optimumPixelFraction - controllerPixelFraction == deficit - surplus
+// exactly, by construction. That identity is the point: a breakdown that does
+// not add up to the headline it explains invites picking whichever number
+// suits, and the first version of this accounted for 0.033 of an 0.081 gap
+// without saying so.
+struct Divergence
+{
+	std::size_t intervals = 0;
+	double optimumPixelFraction = 0.0;
+	double controllerPixelFraction = 0.0;
+	// Pixels the optimum rendered and the controller did not, and vice versa.
+	double deficit = 0.0;
+	double surplus = 0.0;
+	// Intervals where the controller sat below / above / level with the plan.
+	std::size_t below = 0;
+	std::size_t above = 0;
+	std::size_t level = 0;
+	// Moves of the plan the controller did not match within the same interval.
+	std::size_t unfollowedClimbs = 0;
+	std::size_t unfollowedDescents = 0;
+	// Interval count at each rung, indexed as kPresets is.
+	std::vector<std::size_t> optimumRungs;
+	std::vector<std::size_t> controllerRungs;
+
+	[[nodiscard]] bool Valid() const noexcept { return intervals > 0; }
+};
+
+// Both must come from the same trace and the same config, or the grids do not
+// correspond and every number below is a comparison of different moments.
+[[nodiscard]] Divergence ComputeDivergence(const OptimalPlan& a_plan,
+	const ReplayResult& a_controller);
 
 // Computes it. a_intervalSeconds is the decision cadence, a_minDwellSeconds the
 // cooldown, and a_overBudgetAllowance the fraction of FRAMES it may miss -
