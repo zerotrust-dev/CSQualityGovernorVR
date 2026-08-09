@@ -261,8 +261,14 @@ TEST_CASE("a shorter dwell can only help the optimum", "[replay]")
 	REQUIRE(tight.Valid());
 
 	CHECK(loose.timeWeightedPixelFraction >= tight.timeWeightedPixelFraction - 1e-9);
-	// And the tighter dwell cannot need more changes than the looser one allows.
-	CHECK(tight.changes <= loose.changes);
+
+	// Each plan obeys its own dwell. Deliberately NOT "tight.changes <=
+	// loose.changes", which was asserted here and is not a theorem: if a nearly
+	// constant trajectory happens to be optimal under the loose dwell, its
+	// change count can sit below what the tight optimum uses, and nothing in the
+	// constraint forbids that. Only the per-plan limit is actually implied.
+	CHECK(static_cast<double>(loose.changes) <= loose.durationSeconds / 1.0 + 1.0);
+	CHECK(static_cast<double>(tight.changes) <= tight.durationSeconds / 5.0 + 1.0);
 }
 
 TEST_CASE("the optimum is never beaten by an actual controller", "[replay]")

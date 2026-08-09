@@ -7,6 +7,15 @@ project(CSQualityGovernorVR VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Single-config generators default to no build type at all, which means -O0.
+# CI passes --config Release, but that only reaches multi-config generators
+# like MSVC, so the Linux job was silently building unoptimised. That went
+# unnoticed while the replay tool was cheap; the constrained optimum now
+# carries a miss-budget dimension and is about a hundred times the work.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+	set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
 option(CSGOV_BUILD_TESTS "Build the core unit tests" ON)
 option(CSGOV_BUILD_PLUGIN "Build the SKSE plugin (requires CommonLibSSE-NG)" OFF)
 

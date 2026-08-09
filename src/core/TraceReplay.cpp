@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <sstream>
 #include <string>
@@ -283,46 +284,90 @@ OptimalPlan ComputeOptimal(const std::vector<TraceFrame>& a_trace, const CostMod
 		return a_preset * slots + static_cast<std::size_t>(a_held);
 	};
 
-	struct Pass
-	{
-		std::vector<std::size_t> path;
-		double pixels = 0.0;
-		double overRate = 0.0;
+	// The miss allowance is carried as a dimension of the state, not priced.
+	//
+	// It was priced first - maximise pixels minus lambda times missed frames,
+	// and bisect lambda until the plan fits the allowance. That is Lagrangian
+	// relaxation of an integer programme, and it has a duality gap: at a given
+	// price the solver returns SOME optimum of the priced objective, and with
+	// more freedom it can step straight past the allowance into the interior of
+	// the feasible region - spending fewer of its permitted misses and taking
+	// fewer pixels with them. No price enumerates the points it skips over.
+	//
+	// It showed up as a violated monotonicity check: a 1.0 s dwell scored 0.392
+	// where a 5.0 s dwell scored 0.401, though every trajectory available to the
+	// slower solver is available to the faster one. Carrying the budget makes
+	// the constraint exact and the invariant hold by construction.
+	double totalFrames = 0.0;
+	for (const auto value : weight) {
+		totalFrames += value;
+	}
+	std::size_t allowed = static_cast<std::size_t>(a_overBudgetAllowance * totalFrames);
+
+	// A trace can be unaffordable at every preset - the cheapest rung still
+	// misses more than the allowance. Rather than report nothing, raise the
+	// budget to the least any trajectory could achieve, so the plan stays the
+	// best available and overBudgetRate reports what it truly cost.
+	std::size_t floorMisses = 0;
+	for (const auto& row : missed) {
+		floorMisses += *std::min_element(row.begin(), row.end());
+	}
+	allowed = std::max(allowed, floorMisses);
+
+	// Bounds the table. With the allowance at a few percent of a session this is
+	// never reached; if it were, quantising rounds each interval's misses UP, so
+	// the plan stays feasible against the true allowance rather than cheating.
+	constexpr std::size_t kMaxLevels = 1024;
+	const std::size_t quantum = std::max<std::size_t>(1, (allowed + kMaxLevels - 1) / kMaxLevels);
+	const std::size_t levels = allowed / quantum + 1;
+	const auto charge = [quantum](std::size_t a_misses) {
+		return (a_misses + quantum - 1) / quantum;
+	};
+	const auto at = [levels](std::size_t a_state, std::size_t a_budget) {
+		return a_state * levels + a_budget;
 	};
 
-	// One dynamic-programming pass at a fixed price for a missed frame. Both
-	// terms are counted in frames, so the price is what one missed frame is
-	// worth in pixels and the trade is explicit.
-	const auto solve = [&](double a_penalty) {
-		const auto reward = [&](std::size_t a_interval, std::size_t a_preset) {
-			const double f = static_cast<double>(kPresets[a_preset].scale) *
-			                 static_cast<double>(kPresets[a_preset].scale);
-			return f * weight[a_interval] -
-			       a_penalty * static_cast<double>(missed[a_interval][a_preset]);
-		};
+	const auto gain = [&](std::size_t a_interval, std::size_t a_preset) {
+		const double f = static_cast<double>(kPresets[a_preset].scale) *
+		                 static_cast<double>(kPresets[a_preset].scale);
+		return f * weight[a_interval];
+	};
 
-		std::vector<double> previous(states, kUnreachable);
-		std::vector<std::vector<int>> from(missed.size(), std::vector<int>(states, -1));
+	std::vector<double> previous(states * levels, kUnreachable);
+	std::vector<double> current(states * levels, kUnreachable);
+	// Which preset the trajectory came from. The rest of the predecessor is
+	// derivable, so one byte per cell keeps this in tens of megabytes.
+	std::vector<std::vector<std::int8_t>> from(
+		missed.size(), std::vector<std::int8_t>(states * levels, -1));
 
-		for (std::size_t p = 0; p < presets; ++p) {
-			previous[index(p, dwell)] = reward(0, p);
+	for (std::size_t p = 0; p < presets; ++p) {
+		const std::size_t spend = charge(missed[0][p]);
+		if (spend < levels) {
+			previous[at(index(p, dwell), spend)] = gain(0, p);
 		}
+	}
 
-		for (std::size_t i = 1; i < missed.size(); ++i) {
-			std::vector<double> current(states, kUnreachable);
-			for (std::size_t p = 0; p < presets; ++p) {
-				for (int held = 0; held <= dwell; ++held) {
-					const double value = previous[index(p, held)];
+	for (std::size_t i = 1; i < missed.size(); ++i) {
+		std::fill(current.begin(), current.end(), kUnreachable);
+		for (std::size_t p = 0; p < presets; ++p) {
+			for (int held = 0; held <= dwell; ++held) {
+				const std::size_t state = index(p, held);
+				for (std::size_t b = 0; b < levels; ++b) {
+					const double value = previous[at(state, b)];
 					if (value <= kUnreachable) {
 						continue;
 					}
 
 					// Hold: the dwell counter advances, capped.
-					const int nextHeld = std::min(held + 1, dwell);
-					const double holdValue = value + reward(i, p);
-					if (holdValue > current[index(p, nextHeld)]) {
-						current[index(p, nextHeld)] = holdValue;
-						from[i][index(p, nextHeld)] = static_cast<int>(p);
+					const std::size_t holdSpend = b + charge(missed[i][p]);
+					if (holdSpend < levels) {
+						const int nextHeld = std::min(held + 1, dwell);
+						const std::size_t to = at(index(p, nextHeld), holdSpend);
+						const double holdValue = value + gain(i, p);
+						if (holdValue > current[to]) {
+							current[to] = holdValue;
+							from[i][to] = static_cast<std::int8_t>(p);
+						}
 					}
 
 					// Change: only once the dwell has elapsed.
@@ -333,100 +378,79 @@ OptimalPlan ComputeOptimal(const std::vector<TraceFrame>& a_trace, const CostMod
 						if (q == p) {
 							continue;
 						}
-						const double moveValue = value + reward(i, q);
-						if (moveValue > current[index(q, 0)]) {
-							current[index(q, 0)] = moveValue;
-							from[i][index(q, 0)] = static_cast<int>(p);
+						const std::size_t spend = b + charge(missed[i][q]);
+						if (spend >= levels) {
+							continue;
+						}
+						const std::size_t to = at(index(q, 0), spend);
+						const double moveValue = value + gain(i, q);
+						if (moveValue > current[to]) {
+							current[to] = moveValue;
+							from[i][to] = static_cast<std::int8_t>(p);
 						}
 					}
 				}
 			}
-			previous.swap(current);
 		}
+		previous.swap(current);
+	}
 
-		Pass pass;
-		std::size_t bestState = 0;
-		double bestValue = kUnreachable;
-		for (std::size_t s = 0; s < states; ++s) {
-			if (previous[s] > bestValue) {
-				bestValue = previous[s];
-				bestState = s;
-			}
-		}
-		if (bestValue <= kUnreachable) {
-			return pass;
-		}
-
-		// Walk the choices back to recover the trajectory.
-		pass.path.assign(missed.size(), 0);
-		std::size_t state = bestState;
-		for (std::size_t i = missed.size(); i-- > 0;) {
-			pass.path[i] = state / slots;
-			if (i == 0) {
-				break;
-			}
-			const int previousPreset = from[i][state];
-			if (previousPreset < 0) {
-				break;
-			}
-			const int held = static_cast<int>(state % slots);
-			// Held 0 means this interval was the change, so the previous state
-			// had waited out the full dwell; otherwise it held one fewer.
-			state = index(static_cast<std::size_t>(previousPreset), held == 0 ? dwell : held - 1);
-		}
-
-		// Frame-weighted, to match Replay: an interval holding fewer frames must
-		// not count as much as a full one.
-		double pixels = 0.0;
-		double over = 0.0;
-		double frames = 0.0;
-		for (std::size_t i = 0; i < pass.path.size(); ++i) {
-			const double f = static_cast<double>(kPresets[pass.path[i]].scale) *
-			                 static_cast<double>(kPresets[pass.path[i]].scale);
-			pixels += f * weight[i];
-			over += static_cast<double>(missed[i][pass.path[i]]);
-			frames += weight[i];
-		}
-		if (frames > 0.0) {
-			pass.pixels = pixels / frames;
-			pass.overRate = over / frames;
-		}
-		return pass;
-	};
-
-	// Price over-budget intervals until the plan spends no more time over budget
-	// than the controller is allowed to. Zero price maximises pixels and ignores
-	// the budget; a large one refuses every risk. Anything in between trades at
-	// a rate, and bisection finds the cheapest price that satisfies the
-	// allowance.
-	Pass best = solve(0.0);
-	if (best.overRate > a_overBudgetAllowance) {
-		double low = 0.0;
-		double high = 100.0;
-		for (int iteration = 0; iteration < 32; ++iteration) {
-			const double penalty = 0.5 * (low + high);
-			const auto pass = solve(penalty);
-			if (pass.overRate > a_overBudgetAllowance) {
-				low = penalty;
-			} else {
-				high = penalty;
-				best = pass;
-			}
+	std::size_t bestCell = 0;
+	double bestValue = kUnreachable;
+	for (std::size_t cell = 0; cell < previous.size(); ++cell) {
+		if (previous[cell] > bestValue) {
+			bestValue = previous[cell];
+			bestCell = cell;
 		}
 	}
-	if (best.path.empty()) {
+	if (bestValue <= kUnreachable) {
 		return plan;
 	}
 
-	for (std::size_t i = 0; i < best.path.size(); ++i) {
-		plan.trajectory.push_back(kPresets[best.path[i]].preset);
-		if (i > 0 && best.path[i] != best.path[i - 1]) {
+	// Walk the choices back to recover the trajectory.
+	std::vector<std::size_t> path(missed.size(), 0);
+	std::size_t state = bestCell / levels;
+	std::size_t budget = bestCell % levels;
+	for (std::size_t i = missed.size(); i-- > 0;) {
+		const std::size_t preset = state / slots;
+		path[i] = preset;
+		if (i == 0) {
+			break;
+		}
+		const int previousPreset = from[i][at(state, budget)];
+		if (previousPreset < 0) {
+			break;
+		}
+		const std::size_t spend = charge(missed[i][preset]);
+		budget = budget >= spend ? budget - spend : 0;
+		const int held = static_cast<int>(state % slots);
+		// Held 0 means this interval was the change, so the previous state had
+		// waited out the full dwell; otherwise it held one fewer.
+		state = index(static_cast<std::size_t>(previousPreset), held == 0 ? dwell : held - 1);
+	}
+
+	// Frame-weighted, to match Replay: an interval holding fewer frames must not
+	// count as much as a full one. Reported from the true miss counts rather
+	// than the quantised ones, so the figure is what the plan actually costs.
+	double pixels = 0.0;
+	double over = 0.0;
+	double frames = 0.0;
+	for (std::size_t i = 0; i < path.size(); ++i) {
+		const double f = static_cast<double>(kPresets[path[i]].scale) *
+		                 static_cast<double>(kPresets[path[i]].scale);
+		pixels += f * weight[i];
+		over += static_cast<double>(missed[i][path[i]]);
+		frames += weight[i];
+		plan.trajectory.push_back(kPresets[path[i]].preset);
+		if (i > 0 && path[i] != path[i - 1]) {
 			++plan.changes;
 		}
 	}
-	plan.timeWeightedPixelFraction = best.pixels;
-	plan.overBudgetRate = best.overRate;
-	plan.durationSeconds = static_cast<double>(best.path.size()) * a_intervalSeconds;
+	if (frames > 0.0) {
+		plan.timeWeightedPixelFraction = pixels / frames;
+		plan.overBudgetRate = over / frames;
+	}
+	plan.durationSeconds = static_cast<double>(path.size()) * a_intervalSeconds;
 	return plan;
 }
 
