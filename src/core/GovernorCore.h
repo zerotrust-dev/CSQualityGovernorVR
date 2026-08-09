@@ -107,6 +107,16 @@ struct GovernorConfig
 	// censored flat at the compositor cap (E-1), so it would report "settled"
 	// during the transient and defeat the whole point.
 	double calibrationSettleToleranceMs = 1.5;
+	// And never sooner than this after the change, however quiet it looks.
+	//
+	// The detector alone is not enough, which a test caught rather than a
+	// session: it looks for a sustained quiet run, so a transient that is
+	// steady but ELEVATED - the shape of a history rebuild holding cost high
+	// for about a second - is maximally quiet and gets declared settled
+	// immediately. Stability is not the same as having returned to baseline.
+	// E-2 measured settle at ~1.0 s, so that is the floor; the detector still
+	// decides everything beyond it.
+	double calibrationMinDelaySeconds = 1.0;
 	// Bounds the damage from a bad k to a known number of rungs.
 	int maxClimbRungs = 3;
 

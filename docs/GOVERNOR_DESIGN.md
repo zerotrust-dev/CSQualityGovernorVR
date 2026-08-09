@@ -827,6 +827,17 @@ was obvious from the proposal:
   the compositor cap (E-1), so it holds perfectly still *during* the transient
   and would report "settled" immediately — the detector would agree to
   everything and the decision would be inert.
+- **The detector is not sufficient on its own; it needs a floor.** It looks for
+  a sustained *quiet* run, so a transient that holds a raised cost **steady** —
+  the shape of a history rebuild keeping GPU time high for about a second — is
+  maximally quiet and gets declared settled almost immediately. Stability is not
+  the same as having returned to baseline, and "measure rather than assume" does
+  not rescue a measurement of the wrong property. The measurement now starts at
+  the later of the detector's verdict and `_lastChangeAt + 1.0 s`, that floor
+  being E-2's measured settle. The detector still decides everything beyond it,
+  which is where it earns its place: a transition that takes longer than 1.0 s
+  is caught by the detector, and one that merely looks quiet is caught by the
+  floor.
 - **The P95 is taken over the settled frames only, rather than by waiting for
   the whole judge window to be clear of them.** Waiting is the more obvious
   reading of "no frames from before settle", and it does not work: settle plus a
@@ -1502,6 +1513,16 @@ Tested with a transition that costs 15% extra for a second on top of a rung that
 truly costs 20%: measured through the transient the ratio reads about 1.38, and
 the test requires 1.20. A second test pins the accepted cost — GPU time that
 never holds still teaches nothing, and the step keeps its seed.
+
+**The first implementation failed that test at 1.3799 — the exact
+measured-through-the-transient value — and the failure was worth more than the
+pass would have been.** The settle detector looks for a sustained *quiet* run,
+and the test's transient is a steady elevated plateau, which is maximally quiet;
+it was declared settled about 0.2 s in. Stability is not a return to baseline.
+So the decision as originally argued was insufficient on its own, and a floor of
+E-2's ~1.0 s was added beneath the detector. Had the test used a decaying spike —
+the shape I first reached for, and the more flattering one — it would have passed
+and shipped a mechanism that any plateau-shaped transition defeats.
 
 **Expected effect still stands as written and has NOT yet been checked against a
 replay:** this should recover part of the gap and must not close it.

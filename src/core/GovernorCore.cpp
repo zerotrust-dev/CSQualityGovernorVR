@@ -359,11 +359,17 @@ GovernorDecision GovernorCore::Evaluate(double a_nowSeconds, Preset a_current)
 	// changing at its normal cadence would have every calibration pre-empted by
 	// the next change and would learn nothing at all. Filtering says the same
 	// thing without that side effect.
+	// Later of the two: the detector's verdict, and E-2's floor. The floor is
+	// there because a transient that holds a raised cost steady looks perfectly
+	// settled to a detector that measures stability - see
+	// calibrationMinDelaySeconds.
+	const double earliest =
+		std::max(_calibrationSettledAt, _lastChangeAt + _config.calibrationMinDelaySeconds);
 	if (_awaitingCalibration && _calibrationSettledAt >= 0.0) {
 		std::vector<double> settledGpu;
 		settledGpu.reserve(_timedSamples);
 		for (const auto& e : _window) {
-			if (e.gpuMs > 0.0 && e.t >= _calibrationSettledAt) {
+			if (e.gpuMs > 0.0 && e.t >= earliest) {
 				settledGpu.push_back(e.gpuMs);
 			}
 		}
