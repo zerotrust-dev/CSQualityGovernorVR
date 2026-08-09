@@ -86,43 +86,88 @@ GovernorConfig GovernorConfig::Default()
 	return GovernorConfig{};
 }
 
-GovernorCore::GovernorCore(GovernorConfig a_config) :
-	_config(a_config),
-	_probeInterval(a_config.probeIntervalSeconds),
-	_costK(a_config.costK)
+namespace {
+
+// What a single upward rung has cost, measured. Index by the preset being left.
+//
+// Seeded from sweeps on 2026-08-08 (E-27), taking the LARGER of the two observed
+// values per step so an unlearnt step over-states its cost and the first climb
+// under-reaches rather than overshooting. Every adjacent change replaces its
+// entry with the real thing.
+//
+// A single fitted k cannot do this job: the implied k across these same steps
+// runs from 0.21 to 2.27, so the linear form misfits whichever end it is not
+// fitted to - and it under-predicted the cheap rungs, which is what made the
+// controller hunt (E-26).
+[[nodiscard]] double SeedRatio(Preset a_from) noexcept
 {
+	switch (a_from) {
+	case Preset::UltraPerformance:
+		return 1.243;  // -> Performance
+	case Preset::Performance:
+		return 1.139;  // -> Balanced
+	case Preset::Balanced:
+		return 1.116;  // -> Quality
+	case Preset::Quality:
+		return 1.125;  // -> UltraQuality
+	case Preset::UltraQuality:
+		return 1.079;  // -> Hoshipa
+	case Preset::Hoshipa:
+		return 1.077;  // -> NativeAA
+	case Preset::NativeAA:
+	default:
+		return 1.0;  // nothing above it
+	}
 }
 
-// D-17: solve the cost model for k from two observations at different presets.
-//
-//   t = t_fixed · (1 + k·f)   =>   p95_after/p95_before = (1 + k·f_after)/(1 + k·f_before)
-//
-// Returns nothing when the arithmetic is unstable or the answer is implausible.
-// A bad estimate is worse than a stale one: it feeds straight into where the
-// next climb thinks it will land.
-std::optional<double> GovernorCore::SolveK(double a_p95Before, double a_fBefore,
-	double a_p95After, double a_fAfter) const
+[[nodiscard]] std::size_t RatioIndex(Preset a_preset) noexcept
+{
+	for (std::size_t i = 0; i < kPresets.size(); ++i) {
+		if (kPresets[i].preset == a_preset) {
+			return i;
+		}
+	}
+	return 0;
+}
+
+}
+
+GovernorCore::GovernorCore(GovernorConfig a_config) :
+	_config(a_config),
+	_probeInterval(a_config.probeIntervalSeconds)
+{
+	for (std::size_t i = 0; i < kPresets.size(); ++i) {
+		_stepRatio[i] = SeedRatio(kPresets[i].preset);
+	}
+}
+
+double GovernorCore::StepRatio(Preset a_from) const noexcept
+{
+	return _stepRatio[RatioIndex(a_from)];
+}
+
+void GovernorCore::LearnStepRatio(Preset a_from, double a_p95Before, Preset a_to,
+	double a_p95After)
 {
 	if (a_p95Before <= 0.0 || a_p95After <= 0.0) {
-		return std::nullopt;
+		return;
 	}
-	// Dividing by a small difference in pixel fraction amplifies noise into the
-	// answer - D-5's df_min, for the same reason.
-	if (std::abs(a_fAfter - a_fBefore) < 0.05) {
-		return std::nullopt;
-	}
-
-	const double r = a_p95After / a_p95Before;
-	const double denominator = a_fAfter - r * a_fBefore;
-	if (std::abs(denominator) < 1e-6) {
-		return std::nullopt;
+	// Only an adjacent upward step measures a step. A multi-rung move measures
+	// the product of several, and attributing it to one would corrupt them all.
+	const auto up = NextUp(a_from);
+	if (!up || *up != a_to) {
+		return;
 	}
 
-	const double k = (r - 1.0) / denominator;
-	if (!std::isfinite(k) || k < _config.costKMin || k > _config.costKMax) {
-		return std::nullopt;
+	const double ratio = a_p95After / a_p95Before;
+	// Outside this range it is not a step, it is a scene that changed while the
+	// preset did. Keeping the previous number beats adopting that one.
+	if (!std::isfinite(ratio) || ratio < _config.stepRatioMin || ratio > _config.stepRatioMax) {
+		return;
 	}
-	return k;
+
+	auto& stored = _stepRatio[RatioIndex(a_from)];
+	stored = (1.0 - _config.stepRatioAlpha) * stored + _config.stepRatioAlpha * ratio;
 }
 
 void GovernorCore::Reset(double a_nowSeconds)
@@ -144,9 +189,9 @@ void GovernorCore::NotifyApplied(Preset a_preset, double a_nowSeconds)
 	// D-17: hold the pre-change observation so the next settled evaluation can
 	// close the two-point calibration. Only worth it when the window actually
 	// had GPU data to describe the preset we are leaving.
-	if (_lastDecisionP95Gpu > 0.0 && _lastDecisionF > 0.0) {
+	if (_lastDecisionP95Gpu > 0.0) {
 		_p95BeforeChange = _lastDecisionP95Gpu;
-		_fBeforeChange = _lastDecisionF;
+		_presetBeforeChange = _lastDecisionPreset;
 		_awaitingCalibration = true;
 	}
 
@@ -251,19 +296,15 @@ GovernorDecision GovernorCore::Evaluate(double a_nowSeconds, Preset a_current)
 	decision.meanGpuMs = gpus.empty() ? 0.0 : gpuSum / static_cast<double>(gpus.size());
 	decision.headroomMs = gpus.empty() ? 0.0 : _config.frameBudgetMs - decision.p95GpuMs;
 
-	// D-17: close the calibration opened by the last change, now that the
-	// window holds frames from the new preset only. This is the measurement
-	// D-5 promised and the headroom tier never took.
-	const double fNow = static_cast<double>(PresetPixelFraction(a_current));
+	// D-18: close the measurement opened by the last change, now that the window
+	// holds frames from the new preset only. This is D-5's free two-point
+	// calibration, taken at last, and taken per step rather than fitted.
 	if (_awaitingCalibration && decision.p95GpuMs > 0.0) {
-		if (const auto observed =
-				SolveK(_p95BeforeChange, _fBeforeChange, decision.p95GpuMs, fNow)) {
-			_costK = (1.0 - _config.costKAlpha) * _costK + _config.costKAlpha * *observed;
-		}
+		LearnStepRatio(_presetBeforeChange, _p95BeforeChange, a_current, decision.p95GpuMs);
 		_awaitingCalibration = false;
 	}
 	_lastDecisionP95Gpu = decision.p95GpuMs;
-	_lastDecisionF = fNow;
+	_lastDecisionPreset = a_current;
 
 	const auto stats = ComputeStats(frames, _config.frameBudgetMs);
 	decision.dropRate = stats.dropRate;
@@ -317,16 +358,19 @@ GovernorDecision GovernorCore::EvaluateHeadroom(double, Preset a_current,
 			// take the highest that still sits inside the hold band - one
 			// change instead of three, each of which would cost a history reset
 			// and a visible transition.
-			const double fCurrent = static_cast<double>(PresetPixelFraction(a_current));
 			const double landAt = descendAt - _config.landingMarginMs;
 			Preset target = *up;
 			int rungs = 0;
 			double predictedTarget = 0.0;
+			// D-18: walk the ladder multiplying by each step's measured cost.
+			// No model to be wrong at one end - a multi-rung landing is just the
+			// product of the rungs it passes through.
+			double predicted = decision.p95GpuMs;
+			Preset from = a_current;
 			for (auto candidate = up; candidate && rungs < _config.maxClimbRungs;
 				candidate = NextUp(*candidate)) {
-				const double fTarget = static_cast<double>(PresetPixelFraction(*candidate));
-				const double predicted = decision.p95GpuMs * (1.0 + _costK * fTarget) /
-				                         (1.0 + _costK * fCurrent);
+				predicted *= StepRatio(from);
+				from = *candidate;
 				// D-16: every rung is checked, including the first. "Is there
 				// spare capacity now" and "will there still be after paying for
 				// this rung" differ by exactly the cost of the rung.
@@ -353,8 +397,10 @@ GovernorDecision GovernorCore::EvaluateHeadroom(double, Preset a_current,
 			decision.action = GovernorAction::Climb;
 			decision.target = target;
 			decision.reason = Say(
-				"climb: p95 GPU %.2f ms leaves %.2f ms spare, %d rung(s) fit, landing ~%.2f ms (k=%.2f)",
-				decision.p95GpuMs, decision.headroomMs, rungs, predictedTarget, _costK);
+				"climb: p95 GPU %.2f ms leaves %.2f ms spare, %d rung(s) fit, landing ~%.2f ms "
+				"(step costs %.3fx)",
+				decision.p95GpuMs, decision.headroomMs, rungs, predictedTarget,
+				StepRatio(a_current));
 		} else {
 			decision.reason = Say("hold: %.2f ms spare but already at maximum quality",
 				decision.headroomMs);

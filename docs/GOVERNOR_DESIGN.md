@@ -791,7 +791,44 @@ confident wrong reading for the third time in this project.
 Not addressed here: `margin_down` stays at 0.0. The band width is the live
 question (Q-11), and it is being answered by a sweep rather than by argument.
 
-### D-17 — Measure `k`, do not assume it
+### D-18 — A measured cost ratio per step, not a fitted `k`
+
+**Supersedes D-17's single learnt `k`.** Same idea — measure rather than assume —
+applied to the right quantity.
+
+D-2 allowed for this from the start: *"if the residual is too large, the fallback
+is a per-preset measured lookup table, which needs no functional form at all."*
+E-27 is that residual. The implied `k` runs from 0.21 to 2.27 across the ladder,
+so the linear form cannot describe both ends, and fitting one number to it
+guarantees error at whichever end is not being fitted — under-predicting the
+cheap rungs, which is the direction that causes E-26's hunting.
+
+**Six numbers, one per adjacent step:**
+
+```
+ratio[from → to] = p95_after / p95_before      measured on every adjacent change
+predicted landing = p95_now × ratio[current → candidate]
+multi-rung        = the product of the ratios along the way
+```
+
+No model, no `k`, no clamp range, and the prediction is in the same units as the
+thing it predicts.
+
+**Seeded from measurement, at the pessimistic end.** The defaults are the
+*larger* of the two observed values per step, so an unlearnt step over-states its
+cost and the first climb under-reaches. A step that has been observed replaces
+its seed by EMA.
+
+**What it gives up.** A single `k` generalises: one transition anywhere on the
+ladder informs every step. The table does not — each step must be seen at least
+once, so early in a session it runs on seeds. Given the seeds are measured and
+deliberately conservative, that is a better failure than the one E-26 produced.
+
+**How this was decided.** Not by argument: the ratio is stable across sessions
+where the `k` fitted to it is not (E-27), and the constrained optimum now lets
+both be scored on the same captures rather than compared by impression.
+
+### D-17 (superseded by D-18) — Measure `k`, do not assume it
 
 **D-5 has prescribed this since the beginning** — *"the governor changes presets
 anyway, so each change is a free two-point calibration"* — and it was
@@ -1339,6 +1376,7 @@ includes questions about somebody else's instrument.
 
 ## 8. Open Questions
 
+| E-27 | **`k` is not a property of the scene — it varies 10× across the ladder, while the per-step ratio is stable.** Implied `k` per adjacent step, two sessions: 2.18/1.76, 2.27/1.35, 1.98/1.56, 0.26/1.35, 0.94/0.21, 0.32/0.35 — from 0.21 to 2.27, so no single value fits both ends of the ladder and the linear cost model misfits by construction. The same transitions expressed as **cost ratios** repeat across sessions: Balanced→Quality 1.116 vs 1.100, Hoshipa→NativeAA 1.072 vs 1.077, Perf→Balanced 1.139 vs 1.097. | Sweep dwells, sessions 2026-08-08 14:24 and 16:34 |
 | E-26 | **The assumed `k` is wrong by a factor of four in a resolution-bound scene, and it makes the controller hunt.** Standing still, the second live session cycled Quality→UltraQuality→Quality four times. Each climb predicted a landing near 12.65 ms and actually landed at 13.97–14.85, so it descended immediately. The implied `k` for that step is **≈5.6** against the assumed **1.3**. With `margin_up` at 2.5 the landing check is the only gate (E-25), so a wrong `k` translates directly into oscillation — the failure mode the safety net had been hiding at 3.0. | Session 2026-08-09 14:01, and the player standing still while it flashed |
 | E-25 | **`margin_up` is inert below 2.0 — the landing check binds first.** Re-swept across both captures with D-16 active, every value from 2.0 down to −1.0 produces an *identical* replay (marginal: f=0.568, 1.1% over, 3.73 changes/min). Above that it acts purely as a conservatism limiter: 2.5 gives f=0.564/0.513 at 1.0%/1.8% over, and 3.0 gives f=0.546/0.495 at 0.9%/1.2%. At 2.0 the light capture **breaches the 2% constraint** (2.4%), so the limiter is still load-bearing and cannot simply be deleted. Set to **2.5**: ~3.5% more pixels than 3.0 for ~30% more changes. | CI replay report, both captures |
 | Q-11 | ~~**Is `margin_up` now redundant, and costing quality?**~~ **Answered by E-25**: redundant as a climb *criterion* below 2.0, still load-bearing as a safety limiter above it. Original text: | With D-16's landing check the controller asks the climb question twice: "is there spare capacity now" (`margin_up`) and "will it still fit after paying for the rung" (the prediction). The second is the real question and the first is a proxy for it. Measured on the first live session, **16–25% of hold decisions would have climbed safely by the landing test** and were blocked by the threshold, worth about +0.02 pixel fraction — 5–7% more pixels. | Re-sweeping `margin_up` in CI against both captures, which now exercises the landing check that did not exist when 3.0 was chosen. No new session needed: a smaller margin is safer than it was, so the old answer may not survive |

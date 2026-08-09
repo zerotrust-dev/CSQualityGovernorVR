@@ -7,6 +7,7 @@
 #include <vector>
 
 using namespace csgov;
+using Catch::Approx;
 
 namespace {
 
@@ -119,11 +120,28 @@ TEST_CASE("a multi-rung climb lands inside the hold band, not past it", "[govern
 	REQUIRE_FALSE(h.changes.empty());
 	const auto target = h.changes.front().target;
 
-	// Predict the landing the same way the controller did, with the same
-	// conservative k, and require it to sit inside the band.
-	const double fFrom = PresetPixelFraction(Preset::UltraPerformance);
-	const double fTo = PresetPixelFraction(target);
-	const double predicted = 6.0 * (1.0 + config.costK * fTo) / (1.0 + config.costK * fFrom);
+	// Predict the landing the same way the controller did - by multiplying the
+	// measured cost of each rung it passed through - and require it to sit
+	// inside the band.
+	double predicted = 6.0;
+	for (Preset p = Preset::UltraPerformance; p != target;) {
+		predicted *= h.core.StepRatio(p);
+		const auto next = FindPresetByPublicValue(0);
+		(void)next;
+		// walk up by scale
+		Preset best = p;
+		float bestScale = 1e9f;
+		for (const auto& info : kPresets) {
+			if (info.scale > PresetScale(p) && info.scale < bestScale) {
+				bestScale = info.scale;
+				best = info.preset;
+			}
+		}
+		if (best == p) {
+			break;
+		}
+		p = best;
+	}
 	CHECK(predicted <= config.frameBudgetMs - config.marginDownMs);
 }
 
@@ -152,54 +170,6 @@ TEST_CASE("GPU time over budget descends", "[governor]")
 	CHECK(PresetScale(h.changes.front().target) < PresetScale(Preset::Quality));
 }
 
-TEST_CASE("k is learnt from a change instead of assumed", "[governor]")
-{
-	// D-17. The second live session hunted because the assumed k of 1.3 was
-	// about 5.6 in that scene: every climb predicted a landing near 12.6 ms and
-	// arrived at 14.0. Fourteen transitions went past, each one a measurement,
-	// all discarded.
-	auto config = TestConfig();
-	config.costK = 3.0;
-	config.costKAlpha = 1.0;  // take the observation whole, for a clean assertion
-	Harness h{ config, Preset::Performance };
-
-	CHECK(h.core.CostK() == Approx(3.0));
-
-	// Run at Performance, then let it climb, then present the cost a scene with
-	// a much higher k would actually produce at the new preset.
-	h.Run(4.0, 13.889, 9.0);
-	REQUIRE_FALSE(h.changes.empty());
-	const auto target = h.changes.front().target;
-
-	// t = t_fixed(1 + k f) with k = 6: from f(Performance)=0.25 to the target.
-	const double fFrom = PresetPixelFraction(Preset::Performance);
-	const double fTo = PresetPixelFraction(target);
-	const double observed = 9.0 * (1.0 + 6.0 * fTo) / (1.0 + 6.0 * fFrom);
-	h.Run(4.0, 13.889, observed);
-
-	// It should have learnt something much closer to 6 than to 3.
-	CHECK(h.core.CostK() > 4.0);
-}
-
-TEST_CASE("an implausible calibration is rejected rather than believed", "[governor]")
-{
-	// A scene that changes during the transition produces arithmetic that
-	// solves, and a k that is nonsense. Keeping a stale estimate beats
-	// adopting a wrong one, because it feeds the next climb's landing.
-	auto config = TestConfig();
-	config.costK = 3.0;
-	config.costKAlpha = 1.0;
-	Harness h{ config, Preset::Performance };
-
-	h.Run(4.0, 13.889, 9.0);
-	REQUIRE_FALSE(h.changes.empty());
-
-	// GPU time collapses after climbing - impossible under the cost model, so
-	// the implied k is out of range and must be discarded.
-	h.Run(4.0, 13.889, 2.0);
-	CHECK(h.core.CostK() == Approx(3.0));
-}
-
 TEST_CASE("a climb that would land past the band is not taken", "[governor]")
 {
 	// D-16: every rung of a climb is landing-checked, including the first.
@@ -212,7 +182,6 @@ TEST_CASE("a climb that would land past the band is not taken", "[governor]")
 	auto config = TestConfig();
 	config.marginUpMs = 0.5;
 	config.landingMarginMs = 1.0;
-	config.costK = 1.3;
 	Harness h{ config, Preset::Hoshipa };
 
 	// Inside the climb threshold, but one rung from Hoshipa to NativeAA is a
@@ -383,4 +352,61 @@ TEST_CASE("replays a censored ladder the way the real captures behave", "[govern
 			CHECK(h.changes.empty());
 		}
 	}
+}
+
+TEST_CASE("a step's cost is measured, not assumed", "[governor]")
+{
+	// D-18. The controller starts from a seed measured on real sweeps and
+	// replaces it with what the step actually costs here. A single fitted k
+	// could not do this: the implied k across the ladder runs from 0.21 to
+	// 2.27, so it misfits whichever end it is not fitted to (E-27).
+	auto config = TestConfig();
+	config.stepRatioAlpha = 1.0;  // adopt the observation whole, for a clean assertion
+	Harness h{ config, Preset::Balanced };
+
+	const double seeded = h.core.StepRatio(Preset::Balanced);
+	CHECK(seeded > 1.0);
+
+	// Climb from Balanced, then present a cost 30% higher at the new preset.
+	h.Run(4.0, 13.889, 9.0);
+	REQUIRE_FALSE(h.changes.empty());
+	CHECK(h.changes.front().target == Preset::Quality);
+	h.Run(4.0, 13.889, 9.0 * 1.30);
+
+	CHECK(h.core.StepRatio(Preset::Balanced) == Approx(1.30).margin(0.02));
+}
+
+TEST_CASE("only adjacent steps teach a step's cost", "[governor]")
+{
+	// A multi-rung move measures the product of several steps. Attributing it
+	// to one would corrupt every prediction that uses it.
+	auto config = TestConfig();
+	config.stepRatioAlpha = 1.0;
+	Harness h{ config, Preset::UltraPerformance };
+
+	const double before = h.core.StepRatio(Preset::UltraPerformance);
+	h.Run(4.0, 13.889, 5.0);  // large headroom: a multi-rung climb
+	REQUIRE_FALSE(h.changes.empty());
+	REQUIRE(h.changes.front().target != Preset::Performance);  // skipped a rung
+	h.Run(4.0, 13.889, 9.0);
+
+	CHECK(h.core.StepRatio(Preset::UltraPerformance) == Approx(before));
+}
+
+TEST_CASE("an implausible ratio is rejected rather than believed", "[governor]")
+{
+	// A scene that changes during the transition produces a ratio that is not a
+	// measurement of the step. Keeping the previous number beats adopting it,
+	// because it feeds the next climb's landing.
+	auto config = TestConfig();
+	config.stepRatioAlpha = 1.0;
+	Harness h{ config, Preset::Balanced };
+
+	const double before = h.core.StepRatio(Preset::Balanced);
+	h.Run(4.0, 13.889, 9.0);
+	REQUIRE_FALSE(h.changes.empty());
+	// GPU time halves after climbing - impossible for a step, so discard it.
+	h.Run(4.0, 13.889, 4.5);
+
+	CHECK(h.core.StepRatio(Preset::Balanced) == Approx(before));
 }

@@ -3,6 +3,7 @@
 #include "Presets.h"
 #include "Stats.h"
 
+#include <array>
 #include <cstdint>
 #include <deque>
 #include <optional>
@@ -88,20 +89,13 @@ struct GovernorConfig
 	double marginUpMs = 2.5;    // climb when p95 GPU < budget - this
 	double marginDownMs = 0.0;  // descend when p95 GPU > budget - this
 
-	// --- multi-rung climbing on the headroom tier (D-15) ---
-	// Starting value for the resolution sensitivity used to predict where a
-	// climb lands. It is MEASURED from every applied change after that (D-17),
-	// because assuming it produced E-26: a scene whose real k was 5.6 against
-	// an assumed 1.3, and a controller that hunted for a whole session.
-	//
-	// Starts pessimistic. A high k over-states what a rung costs, so the first
-	// climbs of a session under-reach rather than overshoot, which is the safe
-	// direction while nothing has been learnt yet.
-	double costK = 3.0;
-	// How fast the estimate follows a new observation.
-	double costKAlpha = 0.25;
-	double costKMin = 0.2;
-	double costKMax = 12.0;
+	// --- what a rung costs (D-18) ---
+	// How fast a step's measured ratio follows a new observation.
+	double stepRatioAlpha = 0.3;
+	// A ratio outside this range is not a measurement of a step, it is a scene
+	// that changed during the transition. Rejected rather than believed.
+	double stepRatioMin = 1.0;
+	double stepRatioMax = 2.0;
 	// Keeps the predicted landing off the descend edge, so a model error does
 	// not immediately trigger the descent the climb just caused.
 	double landingMarginMs = 1.0;
@@ -166,9 +160,10 @@ public:
 	[[nodiscard]] GovernorTier Tier() const noexcept { return _tier; }
 	[[nodiscard]] double ProbeIntervalSeconds() const noexcept { return _probeInterval; }
 	[[nodiscard]] std::size_t WindowSize() const noexcept { return _window.size(); }
-	// The learnt resolution sensitivity (D-17). Exposed so a session's log can
-	// show what the controller believed, not just what it decided.
-	[[nodiscard]] double CostK() const noexcept { return _costK; }
+	// What the controller currently believes a one-rung climb from this preset
+	// costs, as a multiplier on P95 GPU time (D-18). Exposed so a session's log
+	// shows the belief, not just the decision it produced.
+	[[nodiscard]] double StepRatio(Preset a_from) const noexcept;
 
 private:
 	struct Entry
@@ -179,8 +174,10 @@ private:
 	};
 
 	void Trim(double a_nowSeconds);
-	[[nodiscard]] std::optional<double> SolveK(double a_p95Before, double a_fBefore,
-		double a_p95After, double a_fAfter) const;
+	// Records what an adjacent step actually cost. Ignores anything that is not
+	// a single upward rung, since a multi-rung move measures a product rather
+	// than a step.
+	void LearnStepRatio(Preset a_from, double a_p95Before, Preset a_to, double a_p95After);
 	[[nodiscard]] GovernorDecision Evaluate(double a_nowSeconds, Preset a_current);
 	[[nodiscard]] GovernorDecision EvaluateHeadroom(double a_nowSeconds, Preset a_current,
 		GovernorDecision a_base);
@@ -210,17 +207,19 @@ private:
 	GovernorAction _pendingAction = GovernorAction::Hold;
 	GovernorTier _pendingTier = GovernorTier::Frametime;
 
-	// D-17: the two-point calibration a change gives us for free. The P95 and
-	// pixel fraction from just before the change, held until the window has
-	// refilled at the new preset.
-	double _costK = 3.0;
+	// D-18: what each upward step has actually cost, as a multiplier on P95 GPU
+	// time. Index by the preset being left; seeded from measurement and updated
+	// by every adjacent change. Six numbers, no model.
+	std::array<double, kPresets.size()> _stepRatio{};
+
+	// The two-point measurement a change gives us for free: the P95 from just
+	// before it, held until the window has refilled at the new preset.
 	double _p95BeforeChange = 0.0;
-	double _fBeforeChange = 0.0;
+	Preset _presetBeforeChange = Preset::NativeAA;
 	bool _awaitingCalibration = false;
-	// The last evaluation's readings, which become the "before" half of the
-	// calibration when a change is applied.
+	// The last evaluation's readings, which become the "before" half.
 	double _lastDecisionP95Gpu = 0.0;
-	double _lastDecisionF = 0.0;
+	Preset _lastDecisionPreset = Preset::NativeAA;
 };
 
 }
