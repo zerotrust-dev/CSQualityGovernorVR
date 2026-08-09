@@ -195,23 +195,30 @@ TEST_CASE("the constrained optimum obeys the actuator's limits", "[replay]")
 	CHECK(plan.trajectory.size() > 1);
 }
 
-TEST_CASE("the optimum is at least as good as any fixed preset", "[replay]")
+TEST_CASE("a shorter dwell can only help the optimum", "[replay]")
 {
-	// A sanity property that must hold by construction: holding one preset for
-	// the whole trace is a feasible trajectory, so the optimum cannot be worse
-	// than the best fixed choice that stays in budget.
+	// The invariant that actually pins the dynamic programme: relaxing a
+	// constraint cannot make the optimum worse. A controller allowed to change
+	// every second has every trajectory available to one allowed to change
+	// every five, and more besides.
+	//
+	// This replaces a test that asserted "the optimum beats the best fixed
+	// preset". That is false as stated: a preset whose average fits the budget
+	// can still exceed it in individual intervals, and the optimum refuses
+	// those - so it can legitimately score below a fixed preset that would have
+	// been over budget part of the time. The old test was measuring my
+	// misunderstanding, not the code.
 	std::istringstream stream(SyntheticSweep(9.9, 8.0));
 	const auto trace = ParseTrace(stream);
 	const auto model = FitCostModel(trace);
-	const auto plan = ComputeOptimal(trace, model, 13.889, 0.5, 3.0);
-	REQUIRE(plan.Valid());
+	REQUIRE(model.Valid());
 
-	double bestFixed = 0.0;
-	for (const auto& info : kPresets) {
-		const double f = static_cast<double>(info.scale) * static_cast<double>(info.scale);
-		if (model.PredictMs(f) <= 13.889 && f > bestFixed) {
-			bestFixed = f;
-		}
-	}
-	CHECK(plan.timeWeightedPixelFraction >= bestFixed - 0.01);
+	const auto loose = ComputeOptimal(trace, model, 13.889, 0.5, 1.0);
+	const auto tight = ComputeOptimal(trace, model, 13.889, 0.5, 5.0);
+	REQUIRE(loose.Valid());
+	REQUIRE(tight.Valid());
+
+	CHECK(loose.timeWeightedPixelFraction >= tight.timeWeightedPixelFraction - 1e-9);
+	// And the tighter dwell cannot need more changes than the looser one allows.
+	CHECK(tight.changes <= loose.changes);
 }

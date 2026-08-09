@@ -362,6 +362,10 @@ TEST_CASE("a step's cost is measured, not assumed", "[governor]")
 	// 2.27, so it misfits whichever end it is not fitted to (E-27).
 	auto config = TestConfig();
 	config.stepRatioAlpha = 1.0;  // adopt the observation whole, for a clean assertion
+	// One rung at a time: only an adjacent change measures a step, and with
+	// several rungs affordable the controller would take them in one move and
+	// learn nothing.
+	config.maxClimbRungs = 1;
 	Harness h{ config, Preset::Balanced };
 
 	const double seeded = h.core.StepRatio(Preset::Balanced);
@@ -419,6 +423,7 @@ TEST_CASE("the first measurement replaces the seed rather than blending", "[gove
 	// same thing, not for a measurement against a guess.
 	auto config = TestConfig();
 	config.stepRatioAlpha = 0.3;  // slow smoothing, so blending would be visible
+	config.maxClimbRungs = 1;     // an adjacent change is what measures a step
 	Harness h{ config, Preset::Balanced };
 
 	const double seed = h.core.StepRatio(Preset::Balanced);
