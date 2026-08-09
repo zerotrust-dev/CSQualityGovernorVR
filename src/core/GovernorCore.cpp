@@ -88,8 +88,41 @@ GovernorConfig GovernorConfig::Default()
 
 GovernorCore::GovernorCore(GovernorConfig a_config) :
 	_config(a_config),
-	_probeInterval(a_config.probeIntervalSeconds)
+	_probeInterval(a_config.probeIntervalSeconds),
+	_costK(a_config.costK)
 {
+}
+
+// D-17: solve the cost model for k from two observations at different presets.
+//
+//   t = t_fixed · (1 + k·f)   =>   p95_after/p95_before = (1 + k·f_after)/(1 + k·f_before)
+//
+// Returns nothing when the arithmetic is unstable or the answer is implausible.
+// A bad estimate is worse than a stale one: it feeds straight into where the
+// next climb thinks it will land.
+std::optional<double> GovernorCore::SolveK(double a_p95Before, double a_fBefore,
+	double a_p95After, double a_fAfter) const
+{
+	if (a_p95Before <= 0.0 || a_p95After <= 0.0) {
+		return std::nullopt;
+	}
+	// Dividing by a small difference in pixel fraction amplifies noise into the
+	// answer - D-5's df_min, for the same reason.
+	if (std::abs(a_fAfter - a_fBefore) < 0.05) {
+		return std::nullopt;
+	}
+
+	const double r = a_p95After / a_p95Before;
+	const double denominator = a_fAfter - r * a_fBefore;
+	if (std::abs(denominator) < 1e-6) {
+		return std::nullopt;
+	}
+
+	const double k = (r - 1.0) / denominator;
+	if (!std::isfinite(k) || k < _config.costKMin || k > _config.costKMax) {
+		return std::nullopt;
+	}
+	return k;
 }
 
 void GovernorCore::Reset(double a_nowSeconds)
@@ -107,6 +140,15 @@ void GovernorCore::NotifyApplied(Preset a_preset, double a_nowSeconds)
 {
 	(void)a_preset;
 	_lastChangeAt = a_nowSeconds;
+
+	// D-17: hold the pre-change observation so the next settled evaluation can
+	// close the two-point calibration. Only worth it when the window actually
+	// had GPU data to describe the preset we are leaving.
+	if (_lastDecisionP95Gpu > 0.0 && _lastDecisionF > 0.0) {
+		_p95BeforeChange = _lastDecisionP95Gpu;
+		_fBeforeChange = _lastDecisionF;
+		_awaitingCalibration = true;
+	}
 
 	if (_pendingAction == GovernorAction::Climb && _pendingTier == GovernorTier::Frametime) {
 		// A blind probe. Whether it holds is judged by what happens next.
@@ -209,6 +251,20 @@ GovernorDecision GovernorCore::Evaluate(double a_nowSeconds, Preset a_current)
 	decision.meanGpuMs = gpus.empty() ? 0.0 : gpuSum / static_cast<double>(gpus.size());
 	decision.headroomMs = gpus.empty() ? 0.0 : _config.frameBudgetMs - decision.p95GpuMs;
 
+	// D-17: close the calibration opened by the last change, now that the
+	// window holds frames from the new preset only. This is the measurement
+	// D-5 promised and the headroom tier never took.
+	const double fNow = static_cast<double>(PresetPixelFraction(a_current));
+	if (_awaitingCalibration && decision.p95GpuMs > 0.0) {
+		if (const auto observed =
+				SolveK(_p95BeforeChange, _fBeforeChange, decision.p95GpuMs, fNow)) {
+			_costK = (1.0 - _config.costKAlpha) * _costK + _config.costKAlpha * *observed;
+		}
+		_awaitingCalibration = false;
+	}
+	_lastDecisionP95Gpu = decision.p95GpuMs;
+	_lastDecisionF = fNow;
+
 	const auto stats = ComputeStats(frames, _config.frameBudgetMs);
 	decision.dropRate = stats.dropRate;
 	decision.censored = decision.p95FrameMs <= _config.frameBudgetMs * (1.0 + _config.capTolerance) &&
@@ -261,7 +317,7 @@ GovernorDecision GovernorCore::EvaluateHeadroom(double, Preset a_current,
 			// take the highest that still sits inside the hold band - one
 			// change instead of three, each of which would cost a history reset
 			// and a visible transition.
-			const double fNow = static_cast<double>(PresetPixelFraction(a_current));
+			const double fCurrent = static_cast<double>(PresetPixelFraction(a_current));
 			const double landAt = descendAt - _config.landingMarginMs;
 			Preset target = *up;
 			int rungs = 0;
@@ -269,8 +325,8 @@ GovernorDecision GovernorCore::EvaluateHeadroom(double, Preset a_current,
 			for (auto candidate = up; candidate && rungs < _config.maxClimbRungs;
 				candidate = NextUp(*candidate)) {
 				const double fTarget = static_cast<double>(PresetPixelFraction(*candidate));
-				const double predicted = decision.p95GpuMs * (1.0 + _config.costK * fTarget) /
-				                         (1.0 + _config.costK * fNow);
+				const double predicted = decision.p95GpuMs * (1.0 + _costK * fTarget) /
+				                         (1.0 + _costK * fCurrent);
 				// D-16: every rung is checked, including the first. "Is there
 				// spare capacity now" and "will there still be after paying for
 				// this rung" differ by exactly the cost of the rung.
@@ -296,9 +352,9 @@ GovernorDecision GovernorCore::EvaluateHeadroom(double, Preset a_current,
 
 			decision.action = GovernorAction::Climb;
 			decision.target = target;
-			decision.reason =
-				Say("climb: p95 GPU %.2f ms leaves %.2f ms spare, %d rung(s) fit, landing ~%.2f ms",
-					decision.p95GpuMs, decision.headroomMs, rungs, predictedTarget);
+			decision.reason = Say(
+				"climb: p95 GPU %.2f ms leaves %.2f ms spare, %d rung(s) fit, landing ~%.2f ms (k=%.2f)",
+				decision.p95GpuMs, decision.headroomMs, rungs, predictedTarget, _costK);
 		} else {
 			decision.reason = Say("hold: %.2f ms spare but already at maximum quality",
 				decision.headroomMs);

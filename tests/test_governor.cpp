@@ -152,6 +152,54 @@ TEST_CASE("GPU time over budget descends", "[governor]")
 	CHECK(PresetScale(h.changes.front().target) < PresetScale(Preset::Quality));
 }
 
+TEST_CASE("k is learnt from a change instead of assumed", "[governor]")
+{
+	// D-17. The second live session hunted because the assumed k of 1.3 was
+	// about 5.6 in that scene: every climb predicted a landing near 12.6 ms and
+	// arrived at 14.0. Fourteen transitions went past, each one a measurement,
+	// all discarded.
+	auto config = TestConfig();
+	config.costK = 3.0;
+	config.costKAlpha = 1.0;  // take the observation whole, for a clean assertion
+	Harness h{ config, Preset::Performance };
+
+	CHECK(h.core.CostK() == Approx(3.0));
+
+	// Run at Performance, then let it climb, then present the cost a scene with
+	// a much higher k would actually produce at the new preset.
+	h.Run(4.0, 13.889, 9.0);
+	REQUIRE_FALSE(h.changes.empty());
+	const auto target = h.changes.front().target;
+
+	// t = t_fixed(1 + k f) with k = 6: from f(Performance)=0.25 to the target.
+	const double fFrom = PresetPixelFraction(Preset::Performance);
+	const double fTo = PresetPixelFraction(target);
+	const double observed = 9.0 * (1.0 + 6.0 * fTo) / (1.0 + 6.0 * fFrom);
+	h.Run(4.0, 13.889, observed);
+
+	// It should have learnt something much closer to 6 than to 3.
+	CHECK(h.core.CostK() > 4.0);
+}
+
+TEST_CASE("an implausible calibration is rejected rather than believed", "[governor]")
+{
+	// A scene that changes during the transition produces arithmetic that
+	// solves, and a k that is nonsense. Keeping a stale estimate beats
+	// adopting a wrong one, because it feeds the next climb's landing.
+	auto config = TestConfig();
+	config.costK = 3.0;
+	config.costKAlpha = 1.0;
+	Harness h{ config, Preset::Performance };
+
+	h.Run(4.0, 13.889, 9.0);
+	REQUIRE_FALSE(h.changes.empty());
+
+	// GPU time collapses after climbing - impossible under the cost model, so
+	// the implied k is out of range and must be discarded.
+	h.Run(4.0, 13.889, 2.0);
+	CHECK(h.core.CostK() == Approx(3.0));
+}
+
 TEST_CASE("a climb that would land past the band is not taken", "[governor]")
 {
 	// D-16: every rung of a climb is landing-checked, including the first.

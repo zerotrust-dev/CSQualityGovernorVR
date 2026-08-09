@@ -791,6 +791,41 @@ confident wrong reading for the third time in this project.
 Not addressed here: `margin_down` stays at 0.0. The band width is the live
 question (Q-11), and it is being answered by a sweep rather than by argument.
 
+### D-17 — Measure `k`, do not assume it
+
+**D-5 has prescribed this since the beginning** — *"the governor changes presets
+anyway, so each change is a free two-point calibration"* — and it was
+implemented only for the frametime tier. The headroom tier assumed a constant,
+and E-26 is what that cost: fourteen transitions in a session, every one of them
+a measurement, all discarded, while the controller hunted on a value that was
+wrong by a factor of four.
+
+**On every applied change, solve for `k` from the two observations:**
+
+```
+r = p95_after / p95_before
+k = (r − 1) / (f_after − r · f_before)
+```
+
+then EMA it. Rejected when the arithmetic is unstable or the answer is
+implausible — `|Δf|` too small, a non-positive denominator, `k` outside
+[0.2, 12] — because a bad estimate is worse than a stale one.
+
+**It starts pessimistic, at `k = 3.0`.** Higher `k` over-states what a rung
+costs, so early climbs under-reach. The session averages were 0.61–1.29 and this
+one scene showed 5.6; starting at the low end would repeat E-26 for the first
+minutes of every session, which is precisely when nothing has been learnt yet.
+
+**Why this rather than raising `margin_up` back to 3.0.** That would restore the
+net without fixing the hole: the prediction would still be wrong, it would just
+be overruled more often, and the quality left on the table by E-25 would come
+back. A controller that measures the thing it depends on is also simpler to
+reason about than one carrying a constant that is right for some scenes.
+
+**What it does not fix.** `k` is learnt from the scene you are in, so the first
+climb into a genuinely different scene is still a prediction from stale data.
+The cooldown and the landing margin remain the protection there.
+
 ### D-11 — Fork Community Shaders; do not ship the fork
 
 Measuring GPU time correctly requires brackets around the frame's render work.
@@ -1304,6 +1339,7 @@ includes questions about somebody else's instrument.
 
 ## 8. Open Questions
 
+| E-26 | **The assumed `k` is wrong by a factor of four in a resolution-bound scene, and it makes the controller hunt.** Standing still, the second live session cycled Quality→UltraQuality→Quality four times. Each climb predicted a landing near 12.65 ms and actually landed at 13.97–14.85, so it descended immediately. The implied `k` for that step is **≈5.6** against the assumed **1.3**. With `margin_up` at 2.5 the landing check is the only gate (E-25), so a wrong `k` translates directly into oscillation — the failure mode the safety net had been hiding at 3.0. | Session 2026-08-09 14:01, and the player standing still while it flashed |
 | E-25 | **`margin_up` is inert below 2.0 — the landing check binds first.** Re-swept across both captures with D-16 active, every value from 2.0 down to −1.0 produces an *identical* replay (marginal: f=0.568, 1.1% over, 3.73 changes/min). Above that it acts purely as a conservatism limiter: 2.5 gives f=0.564/0.513 at 1.0%/1.8% over, and 3.0 gives f=0.546/0.495 at 0.9%/1.2%. At 2.0 the light capture **breaches the 2% constraint** (2.4%), so the limiter is still load-bearing and cannot simply be deleted. Set to **2.5**: ~3.5% more pixels than 3.0 for ~30% more changes. | CI replay report, both captures |
 | Q-11 | ~~**Is `margin_up` now redundant, and costing quality?**~~ **Answered by E-25**: redundant as a climb *criterion* below 2.0, still load-bearing as a safety limiter above it. Original text: | With D-16's landing check the controller asks the climb question twice: "is there spare capacity now" (`margin_up`) and "will it still fit after paying for the rung" (the prediction). The second is the real question and the first is a proxy for it. Measured on the first live session, **16–25% of hold decisions would have climbed safely by the landing test** and were blocked by the threshold, worth about +0.02 pixel fraction — 5–7% more pixels. | Re-sweeping `margin_up` in CI against both captures, which now exercises the landing check that did not exist when 3.0 was chosen. No new session needed: a smaller margin is safer than it was, so the old answer may not survive |
 | Q-10 | **Is there a *leading* indicator of scene cost — interior/exterior, weather, actor count — worth feeding the controller?** | **Considered and declined, 2026-08-08.** Measured GPU time is already the best *lagging* indicator, and a second signal would have to either predict a cost change or separate a transient from a structural one; merely correlating with cost adds state without adding information. The case that prompted the question — two changes in eight seconds around a doorway — turned out to be the controller responding correctly to a real scene change, so there is no failure for prediction to fix. Telemetry for it was written and deleted unused. Revisit only if a failure appears that a leading signal would have prevented |

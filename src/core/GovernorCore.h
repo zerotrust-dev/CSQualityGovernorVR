@@ -89,11 +89,19 @@ struct GovernorConfig
 	double marginDownMs = 0.0;  // descend when p95 GPU > budget - this
 
 	// --- multi-rung climbing on the headroom tier (D-15) ---
-	// Resolution sensitivity used to predict where a climb lands. Defaults to
-	// the HIGHEST value measured across sessions (0.61, 0.81, 0.95, 1.29), so
-	// the prediction over-states the cost of resolution and the jump
-	// under-reaches rather than overshooting.
-	double costK = 1.3;
+	// Starting value for the resolution sensitivity used to predict where a
+	// climb lands. It is MEASURED from every applied change after that (D-17),
+	// because assuming it produced E-26: a scene whose real k was 5.6 against
+	// an assumed 1.3, and a controller that hunted for a whole session.
+	//
+	// Starts pessimistic. A high k over-states what a rung costs, so the first
+	// climbs of a session under-reach rather than overshoot, which is the safe
+	// direction while nothing has been learnt yet.
+	double costK = 3.0;
+	// How fast the estimate follows a new observation.
+	double costKAlpha = 0.25;
+	double costKMin = 0.2;
+	double costKMax = 12.0;
 	// Keeps the predicted landing off the descend edge, so a model error does
 	// not immediately trigger the descent the climb just caused.
 	double landingMarginMs = 1.0;
@@ -158,6 +166,9 @@ public:
 	[[nodiscard]] GovernorTier Tier() const noexcept { return _tier; }
 	[[nodiscard]] double ProbeIntervalSeconds() const noexcept { return _probeInterval; }
 	[[nodiscard]] std::size_t WindowSize() const noexcept { return _window.size(); }
+	// The learnt resolution sensitivity (D-17). Exposed so a session's log can
+	// show what the controller believed, not just what it decided.
+	[[nodiscard]] double CostK() const noexcept { return _costK; }
 
 private:
 	struct Entry
@@ -168,6 +179,8 @@ private:
 	};
 
 	void Trim(double a_nowSeconds);
+	[[nodiscard]] std::optional<double> SolveK(double a_p95Before, double a_fBefore,
+		double a_p95After, double a_fAfter) const;
 	[[nodiscard]] GovernorDecision Evaluate(double a_nowSeconds, Preset a_current);
 	[[nodiscard]] GovernorDecision EvaluateHeadroom(double a_nowSeconds, Preset a_current,
 		GovernorDecision a_base);
@@ -196,6 +209,18 @@ private:
 	// happened.
 	GovernorAction _pendingAction = GovernorAction::Hold;
 	GovernorTier _pendingTier = GovernorTier::Frametime;
+
+	// D-17: the two-point calibration a change gives us for free. The P95 and
+	// pixel fraction from just before the change, held until the window has
+	// refilled at the new preset.
+	double _costK = 3.0;
+	double _p95BeforeChange = 0.0;
+	double _fBeforeChange = 0.0;
+	bool _awaitingCalibration = false;
+	// The last evaluation's readings, which become the "before" half of the
+	// calibration when a change is applied.
+	double _lastDecisionP95Gpu = 0.0;
+	double _lastDecisionF = 0.0;
 };
 
 }
