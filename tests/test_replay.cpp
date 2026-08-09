@@ -167,3 +167,51 @@ TEST_CASE("replay reports the objective's terms", "[replay]")
 	CHECK(result.p95GpuMs >= result.meanGpuMs * 0.5);
 	CHECK(result.changesPerMinute >= 0.0);
 }
+
+TEST_CASE("the constrained optimum obeys the actuator's limits", "[replay]")
+{
+	// The perfect-foresight oracle switches every frame and is unreachable.
+	// This one is the honest target: same foresight, but one lever and a
+	// minimum dwell, so a controller can be scored against it as a percentage
+	// rather than judged by eye.
+	std::istringstream stream(SyntheticSweep(9.9, 8.0));
+	const auto trace = ParseTrace(stream);
+	const auto model = FitCostModel(trace);
+	REQUIRE(model.Valid());
+
+	const auto plan = ComputeOptimal(trace, model, 13.889, 0.5, 3.0);
+	REQUIRE(plan.Valid());
+
+	// It cannot beat the ladder's own ceiling, and it must not sit at the floor.
+	CHECK(plan.timeWeightedPixelFraction > 0.111);
+	CHECK(plan.timeWeightedPixelFraction <= 1.0);
+
+	// With t_fixed 9.9 ms of a 13.889 ms budget, the top rungs never fit, so an
+	// optimum that claims no misses must have avoided them.
+	CHECK(plan.overBudgetRate < 0.5);
+
+	// The dwell is real: changes cannot exceed one per cooldown.
+	CHECK(static_cast<double>(plan.changes) <= plan.durationSeconds / 3.0 + 1.0);
+	CHECK(plan.trajectory.size() > 1);
+}
+
+TEST_CASE("the optimum is at least as good as any fixed preset", "[replay]")
+{
+	// A sanity property that must hold by construction: holding one preset for
+	// the whole trace is a feasible trajectory, so the optimum cannot be worse
+	// than the best fixed choice that stays in budget.
+	std::istringstream stream(SyntheticSweep(9.9, 8.0));
+	const auto trace = ParseTrace(stream);
+	const auto model = FitCostModel(trace);
+	const auto plan = ComputeOptimal(trace, model, 13.889, 0.5, 3.0);
+	REQUIRE(plan.Valid());
+
+	double bestFixed = 0.0;
+	for (const auto& info : kPresets) {
+		const double f = static_cast<double>(info.scale) * static_cast<double>(info.scale);
+		if (model.PredictMs(f) <= 13.889 && f > bestFixed) {
+			bestFixed = f;
+		}
+	}
+	CHECK(plan.timeWeightedPixelFraction >= bestFixed - 0.01);
+}

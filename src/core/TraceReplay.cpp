@@ -169,6 +169,207 @@ CostModel FitCostModel(const std::vector<TraceFrame>& a_trace)
 	return model;
 }
 
+OptimalPlan ComputeOptimal(const std::vector<TraceFrame>& a_trace, const CostModel& a_model,
+	double a_budgetMs, double a_intervalSeconds, double a_minDwellSeconds)
+{
+	OptimalPlan plan;
+	if (a_trace.empty() || !a_model.Valid() || a_intervalSeconds <= 0.0) {
+		return plan;
+	}
+
+	// One cost estimate per decision interval, per candidate preset. The P95 is
+	// used rather than the mean because that is what the controller judges on,
+	// so the target is computed on the same statistic it will be compared to.
+	struct Interval
+	{
+		std::array<double, kPresets.size()> cost{};
+	};
+	std::vector<Interval> intervals;
+
+	const double start = a_trace.front().timeSeconds;
+	double windowEnd = start + a_intervalSeconds;
+	std::vector<double> bucket;
+	std::vector<double> bucketF;
+	std::unordered_set<std::uint64_t> seen;
+
+	const auto flush = [&]() {
+		if (bucket.empty()) {
+			return;
+		}
+		std::sort(bucket.begin(), bucket.end());
+		const double p95 = PercentileSorted(bucket, 95.0);
+		const double fRecorded = bucketF.empty() ? 1.0 : bucketF.front();
+		Interval interval;
+		for (std::size_t i = 0; i < kPresets.size(); ++i) {
+			const double f =
+				static_cast<double>(kPresets[i].scale) * static_cast<double>(kPresets[i].scale);
+			const double denominator = a_model.PredictMs(fRecorded);
+			interval.cost[i] =
+				denominator > 0.0 ? p95 * a_model.PredictMs(f) / denominator : p95;
+		}
+		intervals.push_back(interval);
+		bucket.clear();
+		bucketF.clear();
+	};
+
+	for (const auto& row : a_trace) {
+		while (row.timeSeconds > windowEnd) {
+			flush();
+			windowEnd += a_intervalSeconds;
+		}
+		if (row.gpuUs == 0) {
+			continue;
+		}
+		if (row.gpuFrameIndex != 0 && !seen.insert(row.gpuFrameIndex).second) {
+			continue;
+		}
+		const auto info = FindPresetByPublicValue(row.presetPublicValue);
+		if (!info) {
+			continue;
+		}
+		bucket.push_back(static_cast<double>(row.gpuUs) / 1000.0);
+		bucketF.push_back(static_cast<double>(info->scale) * static_cast<double>(info->scale));
+	}
+	flush();
+
+	if (intervals.empty()) {
+		return plan;
+	}
+
+	// State: (preset, intervals held since the last change, capped). The cap is
+	// the dwell requirement, so "held long enough to move again" is a single
+	// state rather than an unbounded counter.
+	const int dwell = std::max(1, static_cast<int>(a_minDwellSeconds / a_intervalSeconds + 0.5));
+	const std::size_t presets = kPresets.size();
+	const std::size_t states = presets * static_cast<std::size_t>(dwell + 1);
+	const double negative = -1.0e18;
+
+	const auto index = [dwell, presets](std::size_t a_preset, int a_held) {
+		(void)presets;
+		return a_preset * static_cast<std::size_t>(dwell + 1) +
+		       static_cast<std::size_t>(std::min(a_held, dwell));
+	};
+
+	std::vector<double> previous(states, negative);
+	std::vector<std::vector<int>> choice(intervals.size(), std::vector<int>(states, -1));
+
+	// Reward for an interval: the pixel fraction, but only when the preset fits
+	// the budget. A preset that does not fit is allowed solely when nothing
+	// fits, because a trajectory that knowingly runs over budget is not a
+	// target worth comparing against.
+	const auto reward = [&](std::size_t a_intervalIndex, std::size_t a_preset) -> double {
+		const auto& interval = intervals[a_intervalIndex];
+		const double f =
+			static_cast<double>(kPresets[a_preset].scale) * static_cast<double>(kPresets[a_preset].scale);
+		if (interval.cost[a_preset] <= a_budgetMs) {
+			return f;
+		}
+		bool anyFits = false;
+		for (std::size_t i = 0; i < presets; ++i) {
+			if (interval.cost[i] <= a_budgetMs) {
+				anyFits = true;
+				break;
+			}
+		}
+		// Nothing fits: take the cheapest and accept the miss (D-6).
+		return anyFits ? negative : f - 1000.0;
+	};
+
+	for (std::size_t p = 0; p < presets; ++p) {
+		const double value = reward(0, p);
+		if (value > negative) {
+			previous[index(p, dwell)] = value;
+		}
+	}
+
+	for (std::size_t i = 1; i < intervals.size(); ++i) {
+		std::vector<double> current(states, negative);
+		for (std::size_t p = 0; p < presets; ++p) {
+			for (int held = 0; held <= dwell; ++held) {
+				const double from = previous[index(p, held)];
+				if (from <= negative) {
+					continue;
+				}
+				// Hold.
+				const double holdValue = from + reward(i, p);
+				auto& holdSlot = current[index(p, std::min(held + 1, dwell))];
+				if (holdValue > holdSlot) {
+					holdSlot = holdValue;
+					choice[i][index(p, std::min(held + 1, dwell))] = static_cast<int>(p);
+				}
+				// Change, only once the dwell has elapsed.
+				if (held < dwell) {
+					continue;
+				}
+				for (std::size_t q = 0; q < presets; ++q) {
+					if (q == p) {
+						continue;
+					}
+					const double moveValue = from + reward(i, q);
+					if (moveValue <= negative) {
+						continue;
+					}
+					auto& slot = current[index(q, 0)];
+					if (moveValue > slot) {
+						slot = moveValue;
+						choice[i][index(q, 0)] = static_cast<int>(p);
+					}
+				}
+			}
+		}
+		previous.swap(current);
+	}
+
+	std::size_t bestState = 0;
+	double bestValue = negative;
+	for (std::size_t s = 0; s < states; ++s) {
+		if (previous[s] > bestValue) {
+			bestValue = previous[s];
+			bestState = s;
+		}
+	}
+	if (bestValue <= negative) {
+		return plan;
+	}
+
+	// Walk the choices back to recover the trajectory.
+	std::vector<std::size_t> path(intervals.size());
+	std::size_t state = bestState;
+	for (std::size_t i = intervals.size(); i-- > 0;) {
+		const std::size_t preset = state / static_cast<std::size_t>(dwell + 1);
+		path[i] = preset;
+		if (i == 0) {
+			break;
+		}
+		const int from = choice[i][state];
+		if (from < 0) {
+			break;
+		}
+		const int held = static_cast<int>(state % static_cast<std::size_t>(dwell + 1));
+		state = index(static_cast<std::size_t>(from), held == 0 ? dwell : held - 1);
+	}
+
+	double pixels = 0.0;
+	std::size_t over = 0;
+	for (std::size_t i = 0; i < path.size(); ++i) {
+		const auto& info = kPresets[path[i]];
+		pixels += static_cast<double>(info.scale) * static_cast<double>(info.scale);
+		if (intervals[i].cost[path[i]] > a_budgetMs) {
+			++over;
+		}
+		plan.trajectory.push_back(info.preset);
+		if (i > 0 && path[i] != path[i - 1]) {
+			++plan.changes;
+		}
+	}
+
+	const double n = static_cast<double>(path.size());
+	plan.timeWeightedPixelFraction = pixels / n;
+	plan.overBudgetRate = static_cast<double>(over) / n;
+	plan.durationSeconds = n * a_intervalSeconds;
+	return plan;
+}
+
 ReplayResult Replay(const std::vector<TraceFrame>& a_trace, const CostModel& a_model,
 	const GovernorConfig& a_config, Counterfactual a_mode)
 {

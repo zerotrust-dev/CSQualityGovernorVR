@@ -203,8 +203,24 @@ void ReportBounds(const std::vector<TraceFrame>& a_trace, const CostModel& a_mod
 	std::cout << "\n  perfect foresight: mean pixel fraction " << std::setprecision(3)
 			  << oracleF / n << ", over budget " << std::setprecision(1) << 100.0 * oracleOver / n
 			  << "%\n";
-	std::cout << "  (no controller can beat this; it changes preset every frame and knows the\n"
-				 "   future. Read a sweep row as a fraction of this, not on its own.)\n";
+	std::cout << "  (unreachable: it changes preset every frame and knows the future)\n";
+
+	// The honest target: the same foresight, but obeying our actuator's limits.
+	GovernorConfig config;
+	const auto plan = ComputeOptimal(a_trace, a_model, a_budgetMs, config.evalIntervalSeconds,
+		config.cooldownSeconds);
+	if (plan.Valid()) {
+		std::cout << "\n  CONSTRAINED OPTIMUM (one lever, " << std::setprecision(1)
+				  << config.cooldownSeconds << " s minimum dwell, " << config.evalIntervalSeconds
+				  << " s cadence):\n";
+		std::cout << "    pixel fraction " << std::setprecision(3)
+				  << plan.timeWeightedPixelFraction << ", over budget " << std::setprecision(1)
+				  << 100.0 * plan.overBudgetRate << "%, " << plan.changes << " changes ("
+				  << std::setprecision(2) << plan.changes * 60.0 / plan.durationSeconds
+				  << " per minute)\n";
+		std::cout << "    This is the number to score against. A controller making many more\n"
+					 "    changes than this is churning; many fewer is sluggish.\n";
+	}
 }
 
 void ReportModel(const CostModel& a_model)
@@ -338,13 +354,28 @@ int main(int argc, char** argv)
 
 	PrintHeader("Best under the constraint");
 	std::cout << "  constraint: over budget <= " << 100.0 * kOverBudgetLimit << "% of frames\n\n";
+
+	const auto optimum = ComputeOptimal(trace, model, base.frameBudgetMs, base.evalIntervalSeconds,
+		base.cooldownSeconds);
 	for (std::size_t i = 0; i < std::min<std::size_t>(5, ranked.size()); ++i) {
 		const auto& point = ranked[i];
 		std::cout << std::fixed << std::setprecision(2) << "  " << i + 1 << ". marginUp "
 				  << point.marginUpMs << "  marginDown " << point.marginDownMs << "  -> pixels "
 				  << std::setprecision(3) << point.scaled.timeWeightedPixelFraction << ", over "
 				  << std::setprecision(1) << 100.0 * point.scaled.overBudgetRate << "%, "
-				  << std::setprecision(2) << point.scaled.changesPerMinute << " changes/min\n";
+				  << std::setprecision(2) << point.scaled.changesPerMinute << " changes/min";
+		if (optimum.Valid() && optimum.timeWeightedPixelFraction > 0.0) {
+			const double ofOptimum =
+				100.0 * point.scaled.timeWeightedPixelFraction / optimum.timeWeightedPixelFraction;
+			const double changeRatio =
+				optimum.changes > 0 ?
+					point.scaled.changesPerMinute /
+						(optimum.changes * 60.0 / optimum.durationSeconds) :
+					0.0;
+			std::cout << "  [" << std::setprecision(0) << ofOptimum << "% of optimum, "
+					  << std::setprecision(1) << changeRatio << "x its changes]";
+		}
+		std::cout << "\n";
 	}
 
 	std::cout << "\n  Read this as a shortlist, not an answer. Replay has no settle latency at\n"

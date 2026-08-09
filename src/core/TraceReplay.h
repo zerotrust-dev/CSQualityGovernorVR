@@ -74,6 +74,36 @@ struct ReplayResult
 	double p95GpuMs = 0.0;
 };
 
+// The best a controller with OUR actuator could have done on this trace.
+//
+// Not the perfect-foresight oracle, which switches every frame and is therefore
+// an unreachable bound. This obeys the real constraints - one lever, a minimum
+// dwell between changes, and a decision cadence - and is computed by dynamic
+// programming over the preset ladder, so it is the tightest honest target for
+// "how well did the controller do".
+//
+// It also answers a question no controller run can: how many changes the scene
+// itself demanded. A design making twice that many is churning; one making half
+// is sluggish. Both are visible without anyone judging a session by feel.
+struct OptimalPlan
+{
+	double timeWeightedPixelFraction = 0.0;
+	std::size_t changes = 0;
+	double overBudgetRate = 0.0;
+	double durationSeconds = 0.0;
+	// The chosen preset per decision interval, so a controller's trajectory can
+	// be diffed against it rather than only its totals.
+	std::vector<Preset> trajectory;
+
+	[[nodiscard]] bool Valid() const noexcept { return durationSeconds > 0.0; }
+};
+
+// Computes it. a_intervalSeconds is the decision cadence; a_minDwellSeconds the
+// cooldown the actuator imposes.
+[[nodiscard]] OptimalPlan ComputeOptimal(const std::vector<TraceFrame>& a_trace,
+	const CostModel& a_model, double a_budgetMs, double a_intervalSeconds,
+	double a_minDwellSeconds);
+
 // Parses a *_frames.csv capture. Unknown or malformed rows are skipped rather
 // than throwing: a capture truncated by a crash is still worth replaying, and
 // that is exactly when one gets truncated.
