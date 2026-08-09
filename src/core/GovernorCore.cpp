@@ -146,6 +146,11 @@ double GovernorCore::StepRatio(Preset a_from) const noexcept
 	return _stepRatio[RatioIndex(a_from)];
 }
 
+bool GovernorCore::StepMeasured(Preset a_from) const noexcept
+{
+	return _stepMeasured[RatioIndex(a_from)];
+}
+
 void GovernorCore::LearnStepRatio(Preset a_from, double a_p95Before, Preset a_to,
 	double a_p95After)
 {

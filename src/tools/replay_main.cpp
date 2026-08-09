@@ -326,6 +326,55 @@ void ReportDivergence(const Divergence& a_gap, double a_intervalSeconds,
 				 "  controller can do. This says which lever, not how much is reachable.\n";
 }
 
+// What the controller believes a rung costs, against what the capture shows.
+//
+// The landing check refuses a climb when p95 * ratio would not clear the
+// budget. If the ratio it uses is inflated, it refuses climbs that would have
+// fitted - and the fix belongs in D-18's learning, not in the gate. If the
+// ratio matches the capture and the climb is still refused, the gate is the
+// problem. The two want opposite changes, so the belief has to be visible.
+void ReportStepRatios(const ReplayResult& a_result,
+	const std::vector<StepObservation>& a_observed, const GovernorConfig& a_config)
+{
+	PrintHeader("Step ratios: believed vs observed");
+	std::cout << std::right << std::fixed;
+	std::cout << "  What a one-rung climb multiplies P95 GPU time by.\n\n";
+	std::cout << "  step                        believed  source     observed  samples\n";
+
+	for (std::size_t i = 0; i + 1 < kPresets.size(); ++i) {
+		const std::string step = std::string(PresetName(kPresets[i].preset)) + " -> " +
+		                         std::string(PresetName(kPresets[i + 1].preset));
+		std::cout << "  " << std::left << std::setw(28) << step << std::right << std::setprecision(3)
+				  << std::setw(8) << a_result.learnedStepRatio[i] << "  " << std::left
+				  << std::setw(9) << (a_result.learnedStepMeasured[i] ? "measured" : "seed")
+				  << std::right;
+
+		if (i < a_observed.size() && a_observed[i].Valid()) {
+			std::cout << std::setw(9) << a_observed[i].ratio << std::setw(9)
+					  << std::min(a_observed[i].samplesFrom, a_observed[i].samplesTo);
+			// Pessimism is what blocks a climb. Flag it only when the belief
+			// exceeds the capture by more than the noise in a dwell mean.
+			const double excess = a_result.learnedStepRatio[i] - a_observed[i].ratio;
+			if (excess > 0.05) {
+				std::cout << "   <- believes it costs " << std::setprecision(0)
+						  << 100.0 * excess / a_observed[i].ratio << "% more than it did";
+			}
+		} else {
+			std::cout << std::setw(9) << "-" << std::setw(9) << "-";
+		}
+		std::cout << "\n";
+	}
+
+	std::cout << "\n  A belief above the observation makes the landing check refuse climbs that\n"
+				 "  would have fitted; below it, the check lets through climbs that will not.\n"
+				 "  'seed' means this step was never measured in this run, so the number is the\n"
+				 "  shipped starting point and says nothing about this machine.\n";
+	std::cout << "  The gate: a climb needs the predicted landing under " << std::setprecision(2)
+			  << a_config.frameBudgetMs - a_config.landingMarginMs << " ms (budget "
+			  << a_config.frameBudgetMs << " minus landingMargin " << a_config.landingMarginMs
+			  << ").\n";
+}
+
 // Is the landing check what is holding the controller a rung low?
 //
 // The divergence table says the gap is pixels never taken, concentrated on the
@@ -542,6 +591,7 @@ int main(int argc, char** argv)
 		const auto shipped = Replay(trace, model, base, Counterfactual::Scaled);
 		ReportDivergence(ComputeDivergence(optimum, shipped), base.evalIntervalSeconds,
 			shipped.timeWeightedPixelFraction);
+		ReportStepRatios(shipped, ObserveStepRatios(trace), base);
 		ReportLandingCheck(trace, model, base, optimum, kOverBudgetLimit);
 	}
 

@@ -477,6 +477,51 @@ OptimalPlan ComputeOptimal(const std::vector<TraceFrame>& a_trace, const CostMod
 	return plan;
 }
 
+std::vector<StepObservation> ObserveStepRatios(const std::vector<TraceFrame>& a_trace)
+{
+	// Same bucketing rules as FitCostModel: dwelling rows only, deduplicated by
+	// measurement identity (Rule 8). A transient counted here would be a
+	// transition's cost, not a rung's.
+	std::array<double, kPresets.size()> sum{};
+	std::array<std::size_t, kPresets.size()> count{};
+	std::unordered_set<std::uint64_t> seen;
+
+	for (const auto& row : a_trace) {
+		if (row.gpuUs == 0 || row.state != "Dwelling") {
+			continue;
+		}
+		if (row.gpuFrameIndex != 0 && !seen.insert(row.gpuFrameIndex).second) {
+			continue;
+		}
+		const auto info = FindPresetByPublicValue(row.presetPublicValue);
+		if (!info) {
+			continue;
+		}
+		for (std::size_t i = 0; i < kPresets.size(); ++i) {
+			if (kPresets[i].preset == info->preset) {
+				sum[i] += static_cast<double>(row.gpuUs) / 1000.0;
+				++count[i];
+				break;
+			}
+		}
+	}
+
+	std::vector<StepObservation> steps(kPresets.size());
+	for (std::size_t i = 0; i + 1 < kPresets.size(); ++i) {
+		steps[i].samplesFrom = count[i];
+		steps[i].samplesTo = count[i + 1];
+		if (count[i] == 0 || count[i + 1] == 0) {
+			continue;
+		}
+		const double from = sum[i] / static_cast<double>(count[i]);
+		const double to = sum[i + 1] / static_cast<double>(count[i + 1]);
+		if (from > 0.0) {
+			steps[i].ratio = to / from;
+		}
+	}
+	return steps;
+}
+
 Divergence ComputeDivergence(const OptimalPlan& a_plan, const ReplayResult& a_controller)
 {
 	Divergence out;
@@ -712,6 +757,13 @@ ReplayResult Replay(const std::vector<TraceFrame>& a_trace, const CostModel& a_m
 		// controller did not stop holding it just because nothing was recorded.
 		result.intervalPixelFraction.push_back(
 			frames > 0.0 ? pixels / frames : static_cast<double>(PresetPixelFraction(held)));
+	}
+
+	// What the controller ended up believing, so the report can put its beliefs
+	// beside what the capture actually shows.
+	for (std::size_t i = 0; i < kPresets.size(); ++i) {
+		result.learnedStepRatio[i] = governor.StepRatio(kPresets[i].preset);
+		result.learnedStepMeasured[i] = governor.StepMeasured(kPresets[i].preset);
 	}
 
 	result.durationSeconds = heldSeconds;

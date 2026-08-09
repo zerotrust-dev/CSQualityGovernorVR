@@ -167,6 +167,11 @@ public:
 	// costs, as a multiplier on P95 GPU time (D-18). Exposed so a session's log
 	// shows the belief, not just the decision it produced.
 	[[nodiscard]] double StepRatio(Preset a_from) const noexcept;
+	// Whether that belief came from a measurement on this machine or is still
+	// the shipped seed. A seed that happens to be wrong and a measurement that
+	// is wrong call for opposite responses, and the number alone cannot tell
+	// them apart.
+	[[nodiscard]] bool StepMeasured(Preset a_from) const noexcept;
 
 private:
 	struct Entry

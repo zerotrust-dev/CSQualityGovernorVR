@@ -3,6 +3,7 @@
 #include "GovernorCore.h"
 #include "Presets.h"
 
+#include <array>
 #include <cstdint>
 #include <istream>
 #include <string>
@@ -89,7 +90,38 @@ struct ReplayResult
 	// that changed mid-interval with pixels it did not render. Doing exactly
 	// that made the first divergence report account for 0.033 of an 0.081 gap.
 	std::vector<double> intervalPixelFraction;
+
+	// What the controller believed a one-rung climb cost, by the end of the
+	// run, indexed as kPresets is by the preset being LEFT. Paired with whether
+	// that belief was ever measured rather than left at its seed.
+	//
+	// The decision this exists to inform: if the controller declines climbs the
+	// optimum takes, either its belief is pessimistic - and the fix is in how
+	// the ratio is learned - or the belief is right and the gate on top of it
+	// is too tight. Those want opposite changes, and the totals cannot separate
+	// them.
+	std::array<double, kPresets.size()> learnedStepRatio{};
+	std::array<bool, kPresets.size()> learnedStepMeasured{};
 };
+
+// What an adjacent step actually cost in the capture, from the dwell buckets:
+// the mean GPU time at rung i+1 over the mean at rung i. Indexed by the rung
+// being left, so it lines up with ReplayResult::learnedStepRatio.
+//
+// This is the trace's own answer, independent of the linear cost model and of
+// anything the controller believed - which is the point, since the controller's
+// belief is the thing under suspicion.
+struct StepObservation
+{
+	double ratio = 0.0;  // 0 when either end was never dwelt at
+	std::size_t samplesFrom = 0;
+	std::size_t samplesTo = 0;
+
+	[[nodiscard]] bool Valid() const noexcept { return ratio > 0.0; }
+};
+
+[[nodiscard]] std::vector<StepObservation> ObserveStepRatios(
+	const std::vector<TraceFrame>& a_trace);
 
 // The best a controller with OUR actuator could have done on this trace.
 //

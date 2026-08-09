@@ -312,6 +312,60 @@ TEST_CASE("both trajectories land on the same grid", "[replay]")
 	}
 }
 
+TEST_CASE("observed step ratios come from the trace, not the model", "[replay]")
+{
+	// On the flat sweep every frame at a rung costs exactly t_fixed +
+	// t_scaled*f, so each adjacent ratio has a closed form and the observation
+	// can be checked against arithmetic rather than against itself.
+	std::istringstream stream(SyntheticSweep(9.9, 8.0));
+	const auto trace = ParseTrace(stream);
+	const auto steps = ObserveStepRatios(trace);
+
+	REQUIRE(steps.size() == kPresets.size());
+	for (std::size_t i = 0; i + 1 < kPresets.size(); ++i) {
+		const double from = static_cast<double>(kPresets[i].scale) *
+		                    static_cast<double>(kPresets[i].scale);
+		const double to = static_cast<double>(kPresets[i + 1].scale) *
+		                  static_cast<double>(kPresets[i + 1].scale);
+		const double expected = (9.9 + 8.0 * to) / (9.9 + 8.0 * from);
+
+		REQUIRE(steps[i].Valid());
+		CHECK(steps[i].ratio == Approx(expected).epsilon(0.005));
+		// Every rung climbs, so no ratio may come back at or below 1.0 - the
+		// value a harness feeding constant GPU time would produce.
+		CHECK(steps[i].ratio > 1.0);
+	}
+
+	// The top rung has nothing above it and must not invent a step.
+	CHECK_FALSE(steps.back().Valid());
+}
+
+TEST_CASE("a replay reports what the controller came to believe", "[replay]")
+{
+	// The report puts these beside the observations above, so a belief that is
+	// never populated would read as a controller that thinks every step is
+	// free, and the conclusion drawn from it would be exactly backwards.
+	std::istringstream stream(VaryingSweep(9.9, 8.0));
+	const auto trace = ParseTrace(stream);
+	const auto model = FitCostModel(trace);
+	REQUIRE(model.Valid());
+
+	GovernorConfig config;
+	const auto result = Replay(trace, model, config, Counterfactual::Scaled);
+
+	for (std::size_t i = 0; i + 1 < kPresets.size(); ++i) {
+		CHECK(result.learnedStepRatio[i] >= config.stepRatioMin);
+		CHECK(result.learnedStepRatio[i] <= config.stepRatioMax);
+	}
+
+	// A step can only be flagged as measured if the run actually changed preset.
+	if (result.changes == 0) {
+		for (const bool measured : result.learnedStepMeasured) {
+			CHECK_FALSE(measured);
+		}
+	}
+}
+
 TEST_CASE("the divergence breakdown adds up to the gap it explains", "[replay]")
 {
 	// The identity: deficit - surplus == optimum - ours, exactly.
