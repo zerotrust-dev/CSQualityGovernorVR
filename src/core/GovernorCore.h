@@ -211,6 +211,10 @@ private:
 	// time. Index by the preset being left; seeded from measurement and updated
 	// by every adjacent change. Six numbers, no model.
 	std::array<double, kPresets.size()> _stepRatio{};
+	// Whether a step has been measured on THIS machine yet. Until it has, the
+	// entry is a seed from someone else's hardware, and the first real
+	// observation replaces it outright.
+	std::array<bool, kPresets.size()> _stepMeasured{};
 
 	// The two-point measurement a change gives us for free: the P95 from just
 	// before it, held until the window has refilled at the new preset.

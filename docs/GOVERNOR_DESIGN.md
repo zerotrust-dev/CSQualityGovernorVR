@@ -814,10 +814,21 @@ multi-rung        = the product of the ratios along the way
 No model, no `k`, no clamp range, and the prediction is in the same units as the
 thing it predicts.
 
-**Seeded from measurement, at the pessimistic end.** The defaults are the
-*larger* of the two observed values per step, so an unlearnt step over-states its
-cost and the first climb under-reaches. A step that has been observed replaces
-its seed by EMA.
+**Seeded from measurement, at the pessimistic end — and the seed is a starting
+point, not a claim.** The defaults are the *larger* of two observed values per
+step, so an unlearnt step over-states its cost and the first climb under-reaches.
+
+They were measured on one GPU, one per-eye resolution and one mod list, so on
+anyone else's machine they are a guess. The **first real measurement of a step
+therefore replaces its seed outright**, and only subsequent ones are smoothed.
+Blending from the start would leave 70% of this machine's hardware in a stranger's
+estimate after their first transition, which is a prior nobody has any reason to
+defend. Smoothing is right between observations of the same thing; it is wrong
+between a measurement and a guess.
+
+The practical consequence is worth stating plainly for anyone reading this as a
+description of the design: **the table self-corrects within a few transitions**,
+and the numbers below are where it starts, not what it believes.
 
 **What it gives up.** A single `k` generalises: one transition anywhere on the
 ladder informs every step. The table does not — each step must be seen at least

@@ -410,3 +410,25 @@ TEST_CASE("an implausible ratio is rejected rather than believed", "[governor]")
 
 	CHECK(h.core.StepRatio(Preset::Balanced) == Approx(before));
 }
+
+TEST_CASE("the first measurement replaces the seed rather than blending", "[governor]")
+{
+	// The seeds come from one machine. Treating them as a prior worth averaging
+	// against would leave most of that machine in someone else's estimate after
+	// their first transition. Smoothing is for repeated observations of the
+	// same thing, not for a measurement against a guess.
+	auto config = TestConfig();
+	config.stepRatioAlpha = 0.3;  // slow smoothing, so blending would be visible
+	Harness h{ config, Preset::Balanced };
+
+	const double seed = h.core.StepRatio(Preset::Balanced);
+	REQUIRE(seed > 1.05);
+
+	h.Run(4.0, 13.889, 9.0);
+	REQUIRE_FALSE(h.changes.empty());
+	REQUIRE(h.changes.front().target == Preset::Quality);
+	h.Run(4.0, 13.889, 9.0 * 1.30);
+
+	// Adopted whole, not 30% of the way from the seed.
+	CHECK(h.core.StepRatio(Preset::Balanced) == Approx(1.30).margin(0.02));
+}

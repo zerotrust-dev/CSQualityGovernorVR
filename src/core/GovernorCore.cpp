@@ -166,7 +166,20 @@ void GovernorCore::LearnStepRatio(Preset a_from, double a_p95Before, Preset a_to
 		return;
 	}
 
-	auto& stored = _stepRatio[RatioIndex(a_from)];
+	const auto index = RatioIndex(a_from);
+	auto& stored = _stepRatio[index];
+
+	// The first real measurement REPLACES the seed rather than blending with
+	// it. The seeds were measured on one machine with one mod list and one
+	// resolution; they are a starting point, not a claim, and treating them as
+	// a prior worth defending would leave 70% of somebody else's hardware in
+	// the estimate after their first transition. Later observations smooth
+	// against each other, where averaging is what one wants.
+	if (!_stepMeasured[index]) {
+		stored = ratio;
+		_stepMeasured[index] = true;
+		return;
+	}
 	stored = (1.0 - _config.stepRatioAlpha) * stored + _config.stepRatioAlpha * ratio;
 }
 
