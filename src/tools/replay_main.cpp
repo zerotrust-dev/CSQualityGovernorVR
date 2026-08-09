@@ -343,9 +343,13 @@ void ReportLandingCheck(const std::vector<TraceFrame>& a_trace, const CostModel&
 {
 	PrintHeader("Landing check sensitivity");
 
+	// ReportDivergence leaves the stream left-aligned for its preset column, and
+	// a numeric table inherits it - which is how the first run of this printed
+	// its percent signs adrift from their numbers.
+	std::cout << std::right;
 	std::cout << "  At the shipped marginUp/marginDown. landingMarginMs is the clearance a\n"
 				 "  predicted landing must have; maxClimbRungs bounds one change's reach.\n\n";
-	std::cout << "  landing  rungs | pixels  over%  chg/min  Hoshipa+  | % of optimum\n";
+	std::cout << "  landing rungs  | pixels  over% chg/min  UQ+time  | of opt\n";
 
 	const double optimumPixels = a_optimum.timeWeightedPixelFraction;
 	for (const double landing : { -1.0, 0.0, 0.5, 1.0, 1.5, 2.0 }) {
@@ -369,13 +373,13 @@ void ReportLandingCheck(const std::vector<TraceFrame>& a_trace, const CostModel&
 				100.0 * static_cast<double>(high) / static_cast<double>(result.trajectory.size());
 
 			std::cout << "  " << std::fixed << std::setprecision(2) << std::setw(6) << landing
-					  << std::setw(7) << rungs << " |" << std::setprecision(3) << std::setw(7)
-					  << result.timeWeightedPixelFraction << std::setprecision(1) << std::setw(7)
+					  << std::setw(6) << rungs << "  | " << std::setprecision(3) << std::setw(6)
+					  << result.timeWeightedPixelFraction << std::setprecision(1) << std::setw(6)
 					  << 100.0 * result.overBudgetRate << "%" << std::setprecision(2)
 					  << std::setw(8) << result.changesPerMinute << std::setprecision(1)
 					  << std::setw(9) << highShare << "%  |";
 			if (optimumPixels > 0.0) {
-				std::cout << std::setprecision(0) << std::setw(11)
+				std::cout << std::setprecision(0) << std::setw(6)
 						  << 100.0 * result.timeWeightedPixelFraction / optimumPixels << "%";
 			}
 			if (result.overBudgetRate > a_overBudgetLimit) {
@@ -385,10 +389,11 @@ void ReportLandingCheck(const std::vector<TraceFrame>& a_trace, const CostModel&
 		}
 	}
 
-	std::cout << "\n  The shipped row is landing 1.00 / rungs 3. A row that lifts Hoshipa+ time\n"
-				 "  without breaching the constraint is evidence the gate is too tight; one\n"
-				 "  that lifts pixels only by going over budget is not - that is the check\n"
-				 "  doing its job.\n";
+	std::cout << "\n  UQ+time is the share of intervals at UltraQuality or above - the rungs the\n"
+				 "  controller under-uses. The shipped row is landing 1.00 / rungs 3. A row\n"
+				 "  that lifts UQ+time without breaching the constraint is evidence the gate is\n"
+				 "  too tight; one that lifts pixels only by going over budget is not - that is\n"
+				 "  the check doing its job.\n";
 }
 
 void ReportSweep(const std::vector<SweepPoint>& a_sweep, double a_oracleGuard)
