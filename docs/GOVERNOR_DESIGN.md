@@ -791,7 +791,7 @@ confident wrong reading for the third time in this project.
 Not addressed here: `margin_down` stays at 0.0. The band width is the live
 question (Q-11), and it is being answered by a sweep rather than by argument.
 
-### D-19 (PROPOSED, not implemented) — A step is only measured once the transition has settled
+### D-19 — A step is only measured once the transition has settled
 
 **Challenges:** the learning half of D-18 (and D-17 before it). Not the per-step
 table itself, which E-31 vindicates — the table is the reason the residual error
@@ -815,12 +815,25 @@ Note what this does NOT claim: it is not that the transient is large, but that
 its contribution never cancels, so smoothing more observations converges on the
 wrong number rather than the right one. More data makes this worse, not better.
 
-**The proposal.** Close the two-point calibration only when the window contains
-no frames from before `T_settle` after the change — either by holding
-`_awaitingCalibration` until `now ≥ _lastChangeAt + T_settle + T_judge`, or by
-reusing the settle detector the sweep already has and refusing to learn until it
-reports settled. The second is preferable: the mechanism exists, is tested, and
-measures the thing rather than assuming a constant.
+**The proposal, and what was built.** Close the two-point calibration only when
+the measurement contains no frames from before the transition settled, using the
+settle detector the sweep already has rather than a fixed delay — the mechanism
+exists, is tested, and measures the thing instead of assuming a constant.
+
+Two details were settled during implementation and are recorded because neither
+was obvious from the proposal:
+
+- **The detector is fed GPU time, not frametime.** Frametime is censored flat at
+  the compositor cap (E-1), so it holds perfectly still *during* the transient
+  and would report "settled" immediately — the detector would agree to
+  everything and the decision would be inert.
+- **The P95 is taken over the settled frames only, rather than by waiting for
+  the whole judge window to be clear of them.** Waiting is the more obvious
+  reading of "no frames from before settle", and it does not work: settle plus a
+  full window is about 3.2 s at the shipped values, longer than the 3.0 s
+  cooldown, so a controller changing at its normal cadence would have every
+  calibration pre-empted by the next change and would learn *nothing at all*.
+  Filtering expresses the same requirement without that side effect.
 
 **Expected effect, stated in advance so it can be checked.** The refusal band
 11.25–11.80 ms covers ~10% of the light session, so this should recover part of
@@ -1470,6 +1483,28 @@ available (E-6).
 ---
 
 ## Decision Log
+
+**2026-08-09 (later) — D-19 approved and implemented.**
+
+Calibration now waits for the settle detector, fed GPU time, and takes its P95
+over the settled frames only. Two things surfaced in the building that the
+proposal had not anticipated, both recorded in D-19 itself:
+
+Feeding the detector *frametime* would have made the change inert — frametime is
+censored flat at the cap (E-1), so it is at its quietest precisely during the
+transient. And requiring the whole judge window to be free of pre-settle frames,
+which is the obvious reading of the proposal, would have delayed every
+calibration to ~3.2 s against a 3.0 s cooldown: a controller changing at its
+normal cadence would have learned nothing whatever. The measurement is filtered
+instead.
+
+Tested with a transition that costs 15% extra for a second on top of a rung that
+truly costs 20%: measured through the transient the ratio reads about 1.38, and
+the test requires 1.20. A second test pins the accepted cost — GPU time that
+never holds still teaches nothing, and the step keeps its seed.
+
+**Expected effect still stands as written and has NOT yet been checked against a
+replay:** this should recover part of the gap and must not close it.
 
 **2026-08-09 — D-19 proposed, awaiting a ruling: learn a step ratio only after
 the transition has settled (E-31). No code written.**

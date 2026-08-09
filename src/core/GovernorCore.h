@@ -102,6 +102,11 @@ struct GovernorConfig
 	// Keeps the predicted landing off the descend edge, so a model error does
 	// not immediately trigger the descent the climb just caused.
 	double landingMarginMs = 1.0;
+	// D-19: how close GPU time must hold before the post-change half of a step
+	// measurement is believed. Applied to GPU time, not frametime - frametime is
+	// censored flat at the compositor cap (E-1), so it would report "settled"
+	// during the transient and defeat the whole point.
+	double calibrationSettleToleranceMs = 1.5;
 	// Bounds the damage from a bad k to a known number of rungs.
 	int maxClimbRungs = 3;
 
@@ -231,6 +236,16 @@ private:
 	// a belief cannot be argued with until you know how much evidence is behind
 	// it.
 	std::array<std::size_t, kPresets.size()> _stepObservations{};
+
+	// D-19: the transition must have settled before the second half of the
+	// measurement counts, and the window must hold no frame from before that
+	// moment. A full window is not the same as a quiet one: minSamples is 30,
+	// about 0.42 s at 72 fps, while settle takes ~1.0 s (E-2), so the old test
+	// could take its P95 entirely inside the transient. Settle only ever adds
+	// GPU time, so that error never cancels and more observations converged on
+	// the wrong number rather than the right one (E-31).
+	SettleDetector _calibrationSettle;
+	double _calibrationSettledAt = -1.0;
 
 	// The two-point measurement a change gives us for free: the P95 from just
 	// before it, held until the window has refilled at the new preset.
