@@ -172,6 +172,10 @@ public:
 	// is wrong call for opposite responses, and the number alone cannot tell
 	// them apart.
 	[[nodiscard]] bool StepMeasured(Preset a_from) const noexcept;
+	// How many observations that belief rests on. A ratio smoothed from six
+	// transitions and one taken from a single transition are different claims,
+	// and the number cannot show which it is.
+	[[nodiscard]] std::size_t StepObservations(Preset a_from) const noexcept;
 
 private:
 	struct Entry
@@ -223,6 +227,10 @@ private:
 	// entry is a seed from someone else's hardware, and the first real
 	// observation replaces it outright.
 	std::array<bool, kPresets.size()> _stepMeasured{};
+	// Diagnostic only - nothing reads this to decide anything. It exists because
+	// a belief cannot be argued with until you know how much evidence is behind
+	// it.
+	std::array<std::size_t, kPresets.size()> _stepObservations{};
 
 	// The two-point measurement a change gives us for free: the P95 from just
 	// before it, held until the window has refilled at the new preset.

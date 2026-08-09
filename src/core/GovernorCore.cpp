@@ -151,6 +151,11 @@ bool GovernorCore::StepMeasured(Preset a_from) const noexcept
 	return _stepMeasured[RatioIndex(a_from)];
 }
 
+std::size_t GovernorCore::StepObservations(Preset a_from) const noexcept
+{
+	return _stepObservations[RatioIndex(a_from)];
+}
+
 void GovernorCore::LearnStepRatio(Preset a_from, double a_p95Before, Preset a_to,
 	double a_p95After)
 {
@@ -180,6 +185,7 @@ void GovernorCore::LearnStepRatio(Preset a_from, double a_p95Before, Preset a_to
 	// a prior worth defending would leave 70% of somebody else's hardware in
 	// the estimate after their first transition. Later observations smooth
 	// against each other, where averaging is what one wants.
+	++_stepObservations[index];
 	if (!_stepMeasured[index]) {
 		stored = ratio;
 		_stepMeasured[index] = true;

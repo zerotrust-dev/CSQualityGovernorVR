@@ -102,6 +102,10 @@ struct ReplayResult
 	// them.
 	std::array<double, kPresets.size()> learnedStepRatio{};
 	std::array<bool, kPresets.size()> learnedStepMeasured{};
+	// Transitions behind each belief. Without it, "believes this step costs 9%
+	// more than it did" might rest on a single transition, and would read as a
+	// finding either way.
+	std::array<std::size_t, kPresets.size()> learnedStepObservations{};
 };
 
 // What an adjacent step actually cost in the capture, from the dwell buckets:

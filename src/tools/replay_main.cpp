@@ -339,18 +339,23 @@ void ReportStepRatios(const ReplayResult& a_result,
 	PrintHeader("Step ratios: believed vs observed");
 	std::cout << std::right << std::fixed;
 	std::cout << "  What a one-rung climb multiplies P95 GPU time by.\n\n";
-	std::cout << "  step                        believed  source     observed  samples\n";
+	std::cout << "  step                             believed  from       observed  frames\n";
 
 	for (std::size_t i = 0; i + 1 < kPresets.size(); ++i) {
 		const std::string step = std::string(PresetName(kPresets[i].preset)) + " -> " +
 		                         std::string(PresetName(kPresets[i + 1].preset));
-		std::cout << "  " << std::left << std::setw(28) << step << std::right << std::setprecision(3)
+		// Wide enough for the longest pair on the ladder. The first version cut
+		// off at 28 and every column after it stepped right by two.
+		std::string source = "seed";
+		if (a_result.learnedStepMeasured[i]) {
+			source = std::to_string(a_result.learnedStepObservations[i]) + " obs";
+		}
+		std::cout << "  " << std::left << std::setw(33) << step << std::right << std::setprecision(3)
 				  << std::setw(8) << a_result.learnedStepRatio[i] << "  " << std::left
-				  << std::setw(9) << (a_result.learnedStepMeasured[i] ? "measured" : "seed")
-				  << std::right;
+				  << std::setw(9) << source << std::right;
 
 		if (i < a_observed.size() && a_observed[i].Valid()) {
-			std::cout << std::setw(9) << a_observed[i].ratio << std::setw(9)
+			std::cout << std::setw(9) << a_observed[i].ratio << std::setw(8)
 					  << std::min(a_observed[i].samplesFrom, a_observed[i].samplesTo);
 			// Pessimism is what blocks a climb. Flag it only when the belief
 			// exceeds the capture by more than the noise in a dwell mean.
@@ -360,15 +365,19 @@ void ReportStepRatios(const ReplayResult& a_result,
 						  << 100.0 * excess / a_observed[i].ratio << "% more than it did";
 			}
 		} else {
-			std::cout << std::setw(9) << "-" << std::setw(9) << "-";
+			std::cout << std::setw(9) << "-" << std::setw(8) << "-";
 		}
 		std::cout << "\n";
 	}
 
 	std::cout << "\n  A belief above the observation makes the landing check refuse climbs that\n"
 				 "  would have fitted; below it, the check lets through climbs that will not.\n"
-				 "  'seed' means this step was never measured in this run, so the number is the\n"
-				 "  shipped starting point and says nothing about this machine.\n";
+				 "  'from' is what the belief rests on: 'seed' means this step was never\n"
+				 "  measured in this run, so the number is the shipped starting point and says\n"
+				 "  nothing about this machine; 'N obs' is how many transitions fed the EMA.\n"
+				 "  'frames' is the sample size of the OBSERVATION, not of the belief - the two\n"
+				 "  are not comparable and a single-observation belief is not a measurement of\n"
+				 "  a rung so much as a measurement of one moment.\n";
 	std::cout << "  The gate: a climb needs the predicted landing under " << std::setprecision(2)
 			  << a_config.frameBudgetMs - a_config.landingMarginMs << " ms (budget "
 			  << a_config.frameBudgetMs << " minus landingMargin " << a_config.landingMarginMs

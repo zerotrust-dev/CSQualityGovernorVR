@@ -364,6 +364,18 @@ TEST_CASE("a replay reports what the controller came to believe", "[replay]")
 			CHECK_FALSE(measured);
 		}
 	}
+
+	// The two must agree: a belief marked measured rests on at least one
+	// observation, and one still at its seed rests on none. The report prints
+	// the count as the belief's evidence, so a count that drifted from the flag
+	// would misstate exactly the thing it was added to establish.
+	for (std::size_t i = 0; i < kPresets.size(); ++i) {
+		if (result.learnedStepMeasured[i]) {
+			CHECK(result.learnedStepObservations[i] >= 1);
+		} else {
+			CHECK(result.learnedStepObservations[i] == 0);
+		}
+	}
 }
 
 TEST_CASE("the divergence breakdown adds up to the gap it explains", "[replay]")

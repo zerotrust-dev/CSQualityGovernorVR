@@ -764,6 +764,7 @@ ReplayResult Replay(const std::vector<TraceFrame>& a_trace, const CostModel& a_m
 	for (std::size_t i = 0; i < kPresets.size(); ++i) {
 		result.learnedStepRatio[i] = governor.StepRatio(kPresets[i].preset);
 		result.learnedStepMeasured[i] = governor.StepMeasured(kPresets[i].preset);
+		result.learnedStepObservations[i] = governor.StepObservations(kPresets[i].preset);
 	}
 
 	result.durationSeconds = heldSeconds;
