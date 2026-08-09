@@ -3,6 +3,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -38,6 +39,36 @@ struct Harness
 	explicit Harness(GovernorConfig a_config, Preset a_start = Preset::Balanced) :
 		core(a_config), preset(a_start)
 	{
+	}
+
+	// A ladder where quality costs something. Without this the harness feeds the
+	// same GPU time whichever preset the controller picked, so a climb is free
+	// and a step's measured cost comes out as exactly 1.00 - which is what one
+	// of these tests was quietly asserting before it was caught.
+	//
+	// This is D-14's rule applied to the tests: a simulation that does not
+	// charge for a quality change will approve of any controller that climbs.
+	void RunLadder(double a_seconds, double a_frameMs,
+		const std::function<double(Preset)>& a_cost, double a_stepMs = 13.889)
+	{
+		static std::uint64_t gpuIndex = 1'000'000;
+		const int steps = static_cast<int>(a_seconds * 1000.0 / a_stepMs);
+		for (int i = 0; i < steps; ++i) {
+			now += a_stepMs / 1000.0;
+			GovernorSample sample;
+			sample.nowSeconds = now;
+			sample.frameTimeMs = a_frameMs;
+			sample.gpuTimeUs = static_cast<std::uint64_t>(a_cost(preset) * 1000.0);
+			sample.gpuFrameIndex = ++gpuIndex;
+			if (auto decision = core.Push(sample, preset)) {
+				decisions.push_back(*decision);
+				if (decision->action != GovernorAction::Hold) {
+					changes.push_back(*decision);
+					preset = decision->target;
+					core.NotifyApplied(preset, now);
+				}
+			}
+		}
 	}
 
 	// gpuMs <= 0 means the timer produced nothing, i.e. the frametime tier.
@@ -361,22 +392,20 @@ TEST_CASE("a step's cost is measured, not assumed", "[governor]")
 	// could not do this: the implied k across the ladder runs from 0.21 to
 	// 2.27, so it misfits whichever end it is not fitted to (E-27).
 	auto config = TestConfig();
-	config.stepRatioAlpha = 1.0;  // adopt the observation whole, for a clean assertion
-	// One rung at a time: only an adjacent change measures a step, and with
-	// several rungs affordable the controller would take them in one move and
-	// learn nothing.
+	config.stepRatioAlpha = 1.0;
 	config.maxClimbRungs = 1;
 	Harness h{ config, Preset::Balanced };
 
-	const double seeded = h.core.StepRatio(Preset::Balanced);
-	CHECK(seeded > 1.0);
+	CHECK(h.core.StepRatio(Preset::Balanced) > 1.0);
 
-	// Climb from Balanced, then present a cost 30% higher at the new preset.
-	h.Run(4.0, 13.889, 9.0);
+	// A ladder where the Balanced to Quality rung costs 30%.
+	const auto cost = [](Preset a_preset) {
+		return a_preset == Preset::Balanced ? 9.0 : 9.0 * 1.30;
+	};
+	h.RunLadder(8.0, 13.889, cost);
+
 	REQUIRE_FALSE(h.changes.empty());
 	CHECK(h.changes.front().target == Preset::Quality);
-	h.Run(4.0, 13.889, 9.0 * 1.30);
-
 	CHECK(h.core.StepRatio(Preset::Balanced) == Approx(1.30).margin(0.02));
 }
 
@@ -404,13 +433,16 @@ TEST_CASE("an implausible ratio is rejected rather than believed", "[governor]")
 	// because it feeds the next climb's landing.
 	auto config = TestConfig();
 	config.stepRatioAlpha = 1.0;
+	config.maxClimbRungs = 1;
 	Harness h{ config, Preset::Balanced };
 
 	const double before = h.core.StepRatio(Preset::Balanced);
-	h.Run(4.0, 13.889, 9.0);
-	REQUIRE_FALSE(h.changes.empty());
+
 	// GPU time halves after climbing - impossible for a step, so discard it.
-	h.Run(4.0, 13.889, 4.5);
+	const auto cost = [](Preset a_preset) {
+		return a_preset == Preset::Balanced ? 9.0 : 4.5;
+	};
+	h.RunLadder(8.0, 13.889, cost);
 
 	CHECK(h.core.StepRatio(Preset::Balanced) == Approx(before));
 }
@@ -419,20 +451,18 @@ TEST_CASE("the first measurement replaces the seed rather than blending", "[gove
 {
 	// The seeds come from one machine. Treating them as a prior worth averaging
 	// against would leave most of that machine in someone else's estimate after
-	// their first transition. Smoothing is for repeated observations of the
-	// same thing, not for a measurement against a guess.
+	// their first transition.
 	auto config = TestConfig();
 	config.stepRatioAlpha = 0.3;  // slow smoothing, so blending would be visible
-	config.maxClimbRungs = 1;     // an adjacent change is what measures a step
+	config.maxClimbRungs = 1;
 	Harness h{ config, Preset::Balanced };
 
-	const double seed = h.core.StepRatio(Preset::Balanced);
-	REQUIRE(seed > 1.05);
+	REQUIRE(h.core.StepRatio(Preset::Balanced) > 1.05);
 
-	h.Run(4.0, 13.889, 9.0);
-	REQUIRE_FALSE(h.changes.empty());
-	REQUIRE(h.changes.front().target == Preset::Quality);
-	h.Run(4.0, 13.889, 9.0 * 1.30);
+	const auto cost = [](Preset a_preset) {
+		return a_preset == Preset::Balanced ? 9.0 : 9.0 * 1.30;
+	};
+	h.RunLadder(8.0, 13.889, cost);
 
 	// Adopted whole, not 30% of the way from the seed.
 	CHECK(h.core.StepRatio(Preset::Balanced) == Approx(1.30).margin(0.02));

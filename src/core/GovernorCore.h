@@ -94,7 +94,10 @@ struct GovernorConfig
 	double stepRatioAlpha = 0.3;
 	// A ratio outside this range is not a measurement of a step, it is a scene
 	// that changed during the transition. Rejected rather than believed.
-	double stepRatioMin = 1.0;
+	// A rung that costs nothing is not a measurement of a rung. 1.0 exactly is
+	// what a harness feeding constant GPU time produces, and the controller
+	// believed it until a test caught it.
+	double stepRatioMin = 1.01;
 	double stepRatioMax = 2.0;
 	// Keeps the predicted landing off the descend edge, so a model error does
 	// not immediately trigger the descent the climb just caused.
