@@ -99,16 +99,20 @@ struct OptimalPlan
 };
 
 // Computes it. a_intervalSeconds is the decision cadence, a_minDwellSeconds the
-// cooldown, a_windowSeconds the window the P95 is taken over, and
-// a_overBudgetAllowance the fraction of intervals it may spend over budget.
+// cooldown, and a_overBudgetAllowance the fraction of FRAMES it may miss -
+// the same quantity ReplayResult::overBudgetRate reports, so the two are
+// comparable.
 //
-// All four must match what the controller actually does, or the result is not a
-// bound. Computed with a 0.5 s window and a zero allowance it returned 0.302
-// against a controller achieving 0.570 on the same trace - an "optimum" below an
-// achievable trajectory, which is only ever a statement about the optimiser.
+// All three must match what the controller actually does, or the result is not
+// a bound. This has been got wrong twice, both times by making the optimiser
+// stricter than the controller and so producing an "optimum" below an
+// achievable trajectory: first by judging a 0.5 s window against the
+// controller's 2 s, then by counting an interval as missed when its windowed
+// P95 exceeded budget while the controller counted individual frames. Frames
+// are now the only currency here.
 [[nodiscard]] OptimalPlan ComputeOptimal(const std::vector<TraceFrame>& a_trace,
 	const CostModel& a_model, double a_budgetMs, double a_intervalSeconds,
-	double a_minDwellSeconds, double a_windowSeconds, double a_overBudgetAllowance);
+	double a_minDwellSeconds, double a_overBudgetAllowance);
 
 // Parses a *_frames.csv capture. Unknown or malformed rows are skipped rather
 // than throwing: a capture truncated by a crash is still worth replaying, and

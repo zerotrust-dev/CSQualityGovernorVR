@@ -4,6 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <sstream>
 #include <string>
 
@@ -30,6 +31,46 @@ std::string SyntheticSweep(double a_tFixed, double a_tScaled)
 		for (int i = 0; i < 400; ++i) {
 			t += 0.0139;
 			++gpuFrame;
+			const double frameMs = gpuMs > 13.889 ? gpuMs : 13.889;
+			out << static_cast<std::uint64_t>(1786000000000.0 + t * 1000.0) << ',' << t << ','
+				<< frameMs << ',' << value << ",Dwelling," << static_cast<std::uint64_t>(gpuMs * 1000.0)
+				<< ',' << gpuFrame << '\n';
+		}
+	}
+	return out.str();
+}
+
+// The same sweep, but with scene load varying frame to frame.
+//
+// SyntheticSweep gives every frame at a preset an identical GPU time, which
+// makes a P95 equal to the mean and equal to each individual frame. Any two
+// definitions of "over budget" agree on it exactly, so it cannot tell a bound
+// that counts missed frames from one that counts intervals whose P95 missed -
+// and it duly passed while the released report showed a controller at 108% of
+// its own optimum. Variance is what makes those two definitions differ, so a
+// bound has to be checked against a trace that has some.
+//
+// The load averages 1.0 across a full cycle, so the fitted cost model is still
+// the one the caller asked for.
+std::string VaryingSweep(double a_tFixed, double a_tScaled)
+{
+	std::ostringstream out;
+	out << "wall_ms,time_s,frame_ms,preset_public,state,gpu_us,gpu_frame\n";
+
+	const std::uint32_t order[]{ 4, 3, 2, 1, 6, 5, 0 };
+	double t = 0.0;
+	std::uint64_t gpuFrame = 0;
+	for (const auto value : order) {
+		const auto info = FindPresetByPublicValue(value);
+		const double f = static_cast<double>(info->scale) * static_cast<double>(info->scale);
+		const double base = a_tFixed + a_tScaled * f;
+		for (int i = 0; i < 400; ++i) {
+			t += 0.0139;
+			++gpuFrame;
+			// A slow swell plus an occasional spike: enough spread that the P95
+			// sits well above the median, as it does in a real capture.
+			const double load = 1.0 + 0.30 * std::sin(i * 0.05) + (i % 17 == 0 ? 0.35 : 0.0);
+			const double gpuMs = base * load;
 			const double frameMs = gpuMs > 13.889 ? gpuMs : 13.889;
 			out << static_cast<std::uint64_t>(1786000000000.0 + t * 1000.0) << ',' << t << ','
 				<< frameMs << ',' << value << ",Dwelling," << static_cast<std::uint64_t>(gpuMs * 1000.0)
@@ -180,7 +221,7 @@ TEST_CASE("the constrained optimum obeys the actuator's limits", "[replay]")
 	const auto model = FitCostModel(trace);
 	REQUIRE(model.Valid());
 
-	const auto plan = ComputeOptimal(trace, model, 13.889, 0.5, 3.0, 2.0, 0.02);
+	const auto plan = ComputeOptimal(trace, model, 13.889, 0.5, 3.0, 0.02);
 	REQUIRE(plan.Valid());
 
 	// It cannot beat the ladder's own ceiling, and it must not sit at the floor.
@@ -214,8 +255,8 @@ TEST_CASE("a shorter dwell can only help the optimum", "[replay]")
 	const auto model = FitCostModel(trace);
 	REQUIRE(model.Valid());
 
-	const auto loose = ComputeOptimal(trace, model, 13.889, 0.5, 1.0, 2.0, 0.02);
-	const auto tight = ComputeOptimal(trace, model, 13.889, 0.5, 5.0, 2.0, 0.02);
+	const auto loose = ComputeOptimal(trace, model, 13.889, 0.5, 1.0, 0.02);
+	const auto tight = ComputeOptimal(trace, model, 13.889, 0.5, 5.0, 0.02);
 	REQUIRE(loose.Valid());
 	REQUIRE(tight.Valid());
 
@@ -229,12 +270,19 @@ TEST_CASE("the optimum is never beaten by an actual controller", "[replay]")
 	// The invariant that matters, and the one whose absence let a broken
 	// optimum ship: a bound below an achievable trajectory is not a bound.
 	//
-	// The first version reported 0.302 on a capture where the controller
-	// achieved 0.570, because it judged feasibility on a 0.5 s P95 while the
-	// controller uses 2 s, and forbade any interval over budget while the
-	// controller tolerates a few percent. Both made it stricter than the thing
-	// it was supposed to bound.
-	std::istringstream stream(SyntheticSweep(9.9, 8.0));
+	// Got wrong twice, both times by making the optimiser stricter than the
+	// controller. First it judged feasibility on a 0.5 s P95 while the controller
+	// uses 2 s, and forbade any interval over budget. Then, with those fixed, it
+	// still counted an interval as missed whenever its windowed P95 exceeded the
+	// budget - while the controller counts individual frames. A window whose P95
+	// only just fits still misses one frame in twenty, so the same nominal 2%
+	// allowance bought the optimiser almost no slack and the controller a real
+	// one. That shipped, and the report showed the controller at 108% and 110%
+	// of its own upper bound.
+	//
+	// This runs on the varying trace on purpose: the flat one cannot distinguish
+	// the two definitions, which is why this test passed while it was wrong.
+	std::istringstream stream(VaryingSweep(9.9, 8.0));
 	const auto trace = ParseTrace(stream);
 	const auto model = FitCostModel(trace);
 	REQUIRE(model.Valid());
@@ -242,7 +290,7 @@ TEST_CASE("the optimum is never beaten by an actual controller", "[replay]")
 	GovernorConfig config;
 	const auto controller = Replay(trace, model, config, Counterfactual::Scaled);
 	const auto plan = ComputeOptimal(trace, model, config.frameBudgetMs,
-		config.evalIntervalSeconds, config.cooldownSeconds, config.judgeWindowSeconds,
+		config.evalIntervalSeconds, config.cooldownSeconds,
 		std::max(controller.overBudgetRate, 0.02));
 
 	REQUIRE(plan.Valid());

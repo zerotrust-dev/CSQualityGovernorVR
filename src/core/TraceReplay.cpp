@@ -170,7 +170,7 @@ CostModel FitCostModel(const std::vector<TraceFrame>& a_trace)
 }
 
 OptimalPlan ComputeOptimal(const std::vector<TraceFrame>& a_trace, const CostModel& a_model,
-	double a_budgetMs, double a_intervalSeconds, double a_minDwellSeconds, double a_windowSeconds,
+	double a_budgetMs, double a_intervalSeconds, double a_minDwellSeconds,
 	double a_overBudgetAllowance)
 {
 	OptimalPlan plan;
@@ -206,50 +206,71 @@ OptimalPlan ComputeOptimal(const std::vector<TraceFrame>& a_trace, const CostMod
 		return plan;
 	}
 
-	// What each preset would have cost, per decision interval.
+	// How many frames each preset would have missed, per decision interval.
 	//
-	// The window must match the controller's. A P95 over half a second sits near
-	// the maximum and rejects presets a two-second P95 accepts, which made an
-	// earlier version of this report a stricter policy rather than a bound.
+	// Counted per frame, deliberately, because that is the currency Replay
+	// reports the controller in. An earlier version judged an interval by its
+	// windowed P95 instead, which is far stricter: a window whose P95 only just
+	// fits still has one frame in twenty over budget. Given the same nominal 2%
+	// allowance the bound was solving a harder problem than the controller, and
+	// duly came out below it - 0.470 against an achieved 0.506 on the light
+	// capture, 0.517 against 0.570 on the marginal one. A bound under an
+	// achievable trajectory is a statement about the optimiser, not the
+	// controller.
+	//
+	// The frames counted are the ones the choice actually governs - the interval
+	// ahead of the decision, not the window behind it. The controller must infer
+	// from the past because that is all it has; this has foresight by
+	// construction, and charging it for frames it could not affect would understate
+	// the ceiling.
 	const std::size_t presets = kPresets.size();
-	std::vector<std::vector<double>> cost;
+	std::vector<std::vector<std::size_t>> missed;  // [interval][preset]
+	std::vector<double> weight;                    // frames in that interval
 	{
-		std::size_t head = 0;
-		std::size_t tail = 0;
-		std::vector<double> window;
-		const double finish = samples.back().t;
-		for (double at = samples.front().t + a_windowSeconds; at <= finish;
-			at += a_intervalSeconds) {
-			while (tail < samples.size() && samples[tail].t <= at) {
-				++tail;
-			}
-			while (head < tail && samples[head].t < at - a_windowSeconds) {
-				++head;
-			}
-			if (tail <= head) {
+		const double start = samples.front().t;
+		const auto slot = [&](double a_t) {
+			return static_cast<std::size_t>((a_t - start) / a_intervalSeconds);
+		};
+		// Not assumed monotonic. ParseTrace skips malformed rows rather than
+		// throwing, precisely so a capture truncated by a crash is still usable,
+		// and a clock that steps backwards there would index this negatively -
+		// which, cast to an unsigned, is an out-of-bounds write rather than a
+		// wrong answer.
+		double finish = start;
+		for (const auto& sample : samples) {
+			finish = std::max(finish, sample.t);
+		}
+		const std::size_t count = slot(finish) + 1;
+		std::vector<std::vector<std::size_t>> over(count, std::vector<std::size_t>(presets, 0));
+		std::vector<double> frames(count, 0.0);
+
+		for (const auto& sample : samples) {
+			const double denominator = a_model.PredictMs(sample.f);
+			if (denominator <= 0.0 || sample.t < start) {
 				continue;
 			}
-			window.clear();
-			for (std::size_t i = head; i < tail; ++i) {
-				window.push_back(samples[i].gpuMs);
+			const std::size_t i = slot(sample.t);
+			if (i >= count) {
+				continue;
 			}
-			std::sort(window.begin(), window.end());
-			const double p95 = PercentileSorted(window, 95.0);
-			const double fRecorded = samples[tail - 1].f;
-			const double denominator = a_model.PredictMs(fRecorded);
-
-			std::vector<double> row(presets, p95);
-			if (denominator > 0.0) {
-				for (std::size_t i = 0; i < presets; ++i) {
-					const double f = static_cast<double>(kPresets[i].scale) *
-					                 static_cast<double>(kPresets[i].scale);
-					row[i] = p95 * a_model.PredictMs(f) / denominator;
+			frames[i] += 1.0;
+			for (std::size_t p = 0; p < presets; ++p) {
+				const double f = static_cast<double>(kPresets[p].scale) *
+				                 static_cast<double>(kPresets[p].scale);
+				if (sample.gpuMs * a_model.PredictMs(f) / denominator > a_budgetMs) {
+					++over[i][p];
 				}
 			}
-			cost.push_back(std::move(row));
+		}
+
+		for (std::size_t i = 0; i < count; ++i) {
+			if (frames[i] > 0.0) {
+				missed.push_back(std::move(over[i]));
+				weight.push_back(frames[i]);
+			}
 		}
 	}
-	if (cost.empty()) {
+	if (missed.empty()) {
 		return plan;
 	}
 
@@ -269,22 +290,25 @@ OptimalPlan ComputeOptimal(const std::vector<TraceFrame>& a_trace, const CostMod
 		double overRate = 0.0;
 	};
 
-	// One dynamic-programming pass at a fixed price for running over budget.
+	// One dynamic-programming pass at a fixed price for a missed frame. Both
+	// terms are counted in frames, so the price is what one missed frame is
+	// worth in pixels and the trade is explicit.
 	const auto solve = [&](double a_penalty) {
 		const auto reward = [&](std::size_t a_interval, std::size_t a_preset) {
 			const double f = static_cast<double>(kPresets[a_preset].scale) *
 			                 static_cast<double>(kPresets[a_preset].scale);
-			return cost[a_interval][a_preset] <= a_budgetMs ? f : f - a_penalty;
+			return f * weight[a_interval] -
+			       a_penalty * static_cast<double>(missed[a_interval][a_preset]);
 		};
 
 		std::vector<double> previous(states, kUnreachable);
-		std::vector<std::vector<int>> from(cost.size(), std::vector<int>(states, -1));
+		std::vector<std::vector<int>> from(missed.size(), std::vector<int>(states, -1));
 
 		for (std::size_t p = 0; p < presets; ++p) {
 			previous[index(p, dwell)] = reward(0, p);
 		}
 
-		for (std::size_t i = 1; i < cost.size(); ++i) {
+		for (std::size_t i = 1; i < missed.size(); ++i) {
 			std::vector<double> current(states, kUnreachable);
 			for (std::size_t p = 0; p < presets; ++p) {
 				for (int held = 0; held <= dwell; ++held) {
@@ -334,9 +358,9 @@ OptimalPlan ComputeOptimal(const std::vector<TraceFrame>& a_trace, const CostMod
 		}
 
 		// Walk the choices back to recover the trajectory.
-		pass.path.assign(cost.size(), 0);
+		pass.path.assign(missed.size(), 0);
 		std::size_t state = bestState;
-		for (std::size_t i = cost.size(); i-- > 0;) {
+		for (std::size_t i = missed.size(); i-- > 0;) {
 			pass.path[i] = state / slots;
 			if (i == 0) {
 				break;
@@ -351,19 +375,22 @@ OptimalPlan ComputeOptimal(const std::vector<TraceFrame>& a_trace, const CostMod
 			state = index(static_cast<std::size_t>(previousPreset), held == 0 ? dwell : held - 1);
 		}
 
+		// Frame-weighted, to match Replay: an interval holding fewer frames must
+		// not count as much as a full one.
 		double pixels = 0.0;
-		std::size_t over = 0;
+		double over = 0.0;
+		double frames = 0.0;
 		for (std::size_t i = 0; i < pass.path.size(); ++i) {
 			const double f = static_cast<double>(kPresets[pass.path[i]].scale) *
 			                 static_cast<double>(kPresets[pass.path[i]].scale);
-			pixels += f;
-			if (cost[i][pass.path[i]] > a_budgetMs) {
-				++over;
-			}
+			pixels += f * weight[i];
+			over += static_cast<double>(missed[i][pass.path[i]]);
+			frames += weight[i];
 		}
-		const double n = static_cast<double>(pass.path.size());
-		pass.pixels = pixels / n;
-		pass.overRate = static_cast<double>(over) / n;
+		if (frames > 0.0) {
+			pass.pixels = pixels / frames;
+			pass.overRate = over / frames;
+		}
 		return pass;
 	};
 
