@@ -735,8 +735,9 @@ void BeginSession()
 			governorConfig.frameBudgetMs - governorConfig.marginDownMs,
 			governorConfig.frameBudgetMs);
 		logger::info("thresholds fitted 2026-08-08 by replay across a light and a marginal "
-					 "session (D-10c, E-23); k={:.2f} for multi-rung climbs, max {} rungs",
-			governorConfig.costK, governorConfig.maxClimbRungs);
+					 "session (D-10c, E-23); climbs cost up to {} rungs, priced from what each "
+					 "step has actually cost here (D-18)",
+			governorConfig.maxClimbRungs);
 	}
 
 	g_cycler = std::make_unique<CyclerCore>(g_api, g_config.cycler);
