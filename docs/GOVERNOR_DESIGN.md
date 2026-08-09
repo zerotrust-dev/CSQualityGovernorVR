@@ -791,7 +791,26 @@ confident wrong reading for the third time in this project.
 Not addressed here: `margin_down` stays at 0.0. The band width is the live
 question (Q-11), and it is being answered by a sweep rather than by argument.
 
-### D-19 — A step is only measured once the transition has settled
+### D-19 (WITHDRAWN — refuted by E-32, code reverted) — A step is only measured once the transition has settled
+
+> **Outcome: implemented, tested against its own pre-registered condition, and
+> withdrawn.** The condition below said the proposal should be withdrawn if the
+> well-sampled step's ratio did not move toward its observation. It moved
+> *away* — 1.146 over 7 observations to 1.184 over 5, against an observed 1.092
+> — while costing observations everywhere and leaving the pixel outcome a wash
+> (E-32). The code is reverted; D-18's learning stands unchanged.
+>
+> The argument below is kept in full rather than deleted, because it is a good
+> argument that happens to be wrong, and the next person to notice that the
+> post-change P95 can be taken inside the settle window deserves to find out
+> that this was tried, how, and what it cost.
+>
+> **What it rules out and what it points at.** The settle transient is not the
+> source of the bias. Excluding the first second after a change *raised* the
+> measured ratio, which is the signature of load genuinely rising after the
+> climb — so the contamination is scene drift across the transition, or a stale
+> `_p95BeforeChange`, and the after-half was never the suspect it looked like.
+
 
 **Challenges:** the learning half of D-18 (and D-17 before it). Not the per-step
 table itself, which E-31 vindicates — the table is the reason the residual error
@@ -1467,6 +1486,7 @@ includes questions about somebody else's instrument.
 
 ## 8. Open Questions
 
+| E-32 | **D-19's own refutation condition fired: excluding settle frames moved the best-sampled belief FURTHER from the truth.** Replay after implementing it, against E-31's figures. Light capture `Quality → UltraQuality`: **1.146 over 7 observations → 1.184 over 5**, against an observed 1.092 — error +5% → **+8%**, in the wrong direction. Marginal: 1.129 over 2 → 1.080 over 1, closer but now resting on a single transition. Observations were lost across the board — the marginal capture's `Performance → Balanced` stopped being measured at all and fell back to its seed. Pixels: light **0.504 → 0.499**, marginal 0.568 → 0.572; a wash, and the light capture's gap widened from 0.083 to 0.089. **The settle transient is therefore not the source of the bias.** The direction is itself informative: excluding the first second after a change *raises* the measured ratio, which is what happens when load genuinely rises after the climb — so the contamination is scene drift across the transition, or a stale `_p95BeforeChange`, not a transient in the after-half. Honest limit: 5 against 7 EMA-weighted observations cannot separate "refuted" from "underpowered", and the pre-registered rule was acted on rather than reinterpreted. | CI run on `9447744`, both captures |
 | E-31 | **The one step ratio with real evidence behind it is biased high, and the poorly-sampled ones are just noise.** Learned ratios at the end of a replay, against the same step measured from the dwell buckets: `Quality → UltraQuality` reads **1.146 believed vs 1.092 observed on 7 observations** (light) and **1.129 vs 1.034 on 2** (marginal) — pessimistic in both, and the only step that is. Every other step rests on **exactly one** observation: Perf→Bal 1.056 vs 1.114 and 1.024 vs 1.139, Bal→Qual 1.047 vs 1.087 and 1.165 vs 1.116 — scattering both directions, which is what a single transition contaminated by scene movement looks like. Averaging seven cancels the scene and leaves what is systematic. Consequence: with the gate at `budget − landingMargin` = 12.89 ms, believing 1.146 instead of 1.092 refuses every climb whose P95 lies in **11.25–11.80 ms**, about **10%** of the light session — and `Quality → UltraQuality` is exactly the step the divergence table shows under-used (20.9% of intervals against the optimum's 40.2%). | CI run on `3f226d5`, both captures |
 | E-30 | **The optimum was never reporting the value its own table had found — the trajectory was reconstructed by guesswork.** With E-29's exact DP in place the monotonicity check still failed, and wider: **0.382** at a 1.0 s dwell against **0.410** at 5.0 s. Cause, present since the first version and therefore underneath E-28's published figures too: the backpointer stored only the predecessor's *preset*, and the dwell counter was re-derived as `held == 0 ? dwell : held - 1`. That derivation is not unique — `nextHeld = min(held + 1, dwell)` means a state at `held == dwell` has two possible predecessors, `dwell - 1` and `dwell` itself, already capped. On a wrong guess the walk lands on a cell that was never written, breaks out, and leaves the whole earlier prefix at preset index 0 — the cheapest rung — so the reported figure sat below the optimum the table had actually computed, by an amount varying with the dwell. Now stores the full predecessor state; nothing is re-derived except the budget, which genuinely is unique. **Lesson: two of these three defects were in the reporting path, not the search.** A DP that computes the right answer and then misreads its own table is indistinguishable, from the outside, from one that computes the wrong answer. | CI run 31324364163, commit `adc7b70` |
 | E-29 | **Pricing the miss allowance cannot solve this problem exactly — the constraint has to be carried.** With E-28 fixed, the monotonicity check failed: a **1.0 s** dwell scored **0.392** where a **5.0 s** dwell scored **0.401**, though every trajectory available to the slower solver is available to the faster one. Cause: penalty bisection is Lagrangian relaxation of an integer programme and has a duality gap. At a given price the DP returns *some* optimum of `pixels − λ·missed`; with more freedom it can step straight past the allowance into the interior of the feasible region, spending fewer permitted misses and taking fewer pixels with them, and no λ enumerates the skipped points. Replaced with an exact DP carrying consumed misses as a third state dimension, so the constraint binds by construction. The flat synthetic trace had too few distinct trade-off points to land in the gap; `VaryingSweep` exposed it immediately. Also retired the companion assertion `tight.changes <= loose.changes` — it is not a theorem, since a near-constant trajectory can be optimal under the loose dwell and use fewer changes than the tight optimum. | CI run 31319876314, commit `654da2f` |
@@ -1495,7 +1515,32 @@ available (E-6).
 
 ## Decision Log
 
-**2026-08-09 (later) — D-19 approved and implemented.**
+**2026-08-09 (later still) — D-19 withdrawn and reverted; its refutation
+condition fired (E-32).**
+
+The replay it was waiting for went the wrong way. `Quality → UltraQuality` on
+the light capture moved from 1.146 over 7 observations to **1.184 over 5**,
+against an observed 1.092 — the best-evidenced belief got *worse*, not better.
+Observations were lost across both captures, one step falling back to its seed
+entirely, and pixels were a wash (0.504 → 0.499 light, 0.568 → 0.572 marginal).
+
+So the settle transient is not the source of the bias. The direction says where
+to look next: excluding the first second after a change **raises** the measured
+ratio, which is what happens when load genuinely rises after the climb. That
+points at scene drift across the transition, or at `_p95BeforeChange` being
+stale — the before-half, not the after-half. Both were listed in D-19 as
+alternatives and neither has been tested.
+
+The rule was written in advance precisely so this outcome would not be
+reinterpreted, and it was acted on rather than tuned around. What cannot be
+claimed is a clean refutation: 5 against 7 EMA-weighted observations cannot
+separate "the hypothesis is wrong" from "the test is underpowered". A change
+that costs observations while showing no benefit is the worse thing to keep,
+which decides it on cost rather than on proof.
+
+The argument is kept in the decision, marked withdrawn, rather than deleted.
+
+**2026-08-09 (earlier) — D-19 approved and implemented.**
 
 Calibration now waits for the settle detector, fed GPU time, and takes its P95
 over the settled frames only. Two things surfaced in the building that the

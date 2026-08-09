@@ -134,9 +134,7 @@ namespace {
 
 GovernorCore::GovernorCore(GovernorConfig a_config) :
 	_config(a_config),
-	_probeInterval(a_config.probeIntervalSeconds),
-	_calibrationSettle(SettleDetector::Config{ a_config.minSamples,
-		a_config.calibrationSettleToleranceMs, 5 })
+	_probeInterval(a_config.probeIntervalSeconds)
 {
 	for (std::size_t i = 0; i < kPresets.size(); ++i) {
 		_stepRatio[i] = SeedRatio(kPresets[i].preset);
@@ -205,13 +203,6 @@ void GovernorCore::Reset(double a_nowSeconds)
 	// failed was a place we are no longer in.
 	_probeActive = false;
 	_probeInterval = _config.probeIntervalSeconds;
-
-	// A scene cut invalidates the pending calibration too: the "before" half
-	// describes a place we are no longer in, so the pair would measure the cut
-	// rather than the rung.
-	_awaitingCalibration = false;
-	_calibrationSettle.Reset();
-	_calibrationSettledAt = -1.0;
 }
 
 void GovernorCore::NotifyApplied(Preset a_preset, double a_nowSeconds)
@@ -226,9 +217,6 @@ void GovernorCore::NotifyApplied(Preset a_preset, double a_nowSeconds)
 		_p95BeforeChange = _lastDecisionP95Gpu;
 		_presetBeforeChange = _lastDecisionPreset;
 		_awaitingCalibration = true;
-		// D-19: the transition starts here, so the settle run starts here too.
-		_calibrationSettle.Reset();
-		_calibrationSettledAt = -1.0;
 	}
 
 	if (_pendingAction == GovernorAction::Climb && _pendingTier == GovernorTier::Frametime) {
@@ -274,16 +262,6 @@ std::optional<GovernorDecision> GovernorCore::Push(const GovernorSample& a_sampl
 		entry.gpuMs = static_cast<double>(a_sample.gpuTimeUs) / 1000.0;
 		_lastGpuFrameIndex = a_sample.gpuFrameIndex;
 		++_timedSamples;
-	}
-
-	// D-19: watch the transition settle, on GPU time rather than frametime. The
-	// detector wants a sustained quiet run, so a transient keeps restarting it
-	// and the moment it reports is measured rather than assumed - which is why
-	// this is the settle detector and not a fixed delay.
-	if (_awaitingCalibration && _calibrationSettledAt < 0.0 && entry.gpuMs > 0.0) {
-		if (_calibrationSettle.Push(entry.gpuMs)) {
-			_calibrationSettledAt = a_sample.nowSeconds;
-		}
 	}
 
 	_window.push_back(entry);
@@ -345,39 +323,9 @@ GovernorDecision GovernorCore::Evaluate(double a_nowSeconds, Preset a_current)
 	// D-18: close the measurement opened by the last change, now that the window
 	// holds frames from the new preset only. This is D-5's free two-point
 	// calibration, taken at last, and taken per step rather than fitted.
-	//
-	// D-19 adds the second condition: the window must also hold no frame from
-	// before the transition settled. "Full" was never the same as "quiet" - 30
-	// samples arrive in 0.42 s and settle takes ~1.0 s - and since settle only
-	// ever adds GPU time, a P95 taken early is inflated every single time. That
-	// bias does not average out, so smoothing more of them converged on the
-	// wrong number (E-31).
-	// The measurement is taken over the settled frames ONLY, rather than by
-	// waiting for the whole judge window to be free of them. Waiting would push
-	// the calibration past settle plus a full window - about 3.2 s at the
-	// shipped values - which is longer than the 3.0 s cooldown, so a controller
-	// changing at its normal cadence would have every calibration pre-empted by
-	// the next change and would learn nothing at all. Filtering says the same
-	// thing without that side effect.
-	// Later of the two: the detector's verdict, and E-2's floor. The floor is
-	// there because a transient that holds a raised cost steady looks perfectly
-	// settled to a detector that measures stability - see
-	// calibrationMinDelaySeconds.
-	const double earliest =
-		std::max(_calibrationSettledAt, _lastChangeAt + _config.calibrationMinDelaySeconds);
-	if (_awaitingCalibration && _calibrationSettledAt >= 0.0) {
-		std::vector<double> settledGpu;
-		settledGpu.reserve(_timedSamples);
-		for (const auto& e : _window) {
-			if (e.gpuMs > 0.0 && e.t >= earliest) {
-				settledGpu.push_back(e.gpuMs);
-			}
-		}
-		if (settledGpu.size() >= _config.minSamples) {
-			LearnStepRatio(_presetBeforeChange, _p95BeforeChange, a_current,
-				Percentile(settledGpu, 95.0));
-			_awaitingCalibration = false;
-		}
+	if (_awaitingCalibration && decision.p95GpuMs > 0.0) {
+		LearnStepRatio(_presetBeforeChange, _p95BeforeChange, a_current, decision.p95GpuMs);
+		_awaitingCalibration = false;
 	}
 	_lastDecisionP95Gpu = decision.p95GpuMs;
 	_lastDecisionPreset = a_current;
