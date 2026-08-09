@@ -13,6 +13,7 @@
 #include "core/TraceReplay.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <iomanip>

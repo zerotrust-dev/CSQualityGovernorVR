@@ -169,20 +169,6 @@ CostModel FitCostModel(const std::vector<TraceFrame>& a_trace)
 	return model;
 }
 
-namespace {
-
-// One DP pass at a fixed penalty for running over budget. Returns the chosen
-// path; the caller bisects the penalty to meet an allowance.
-struct OptimalPass
-{
-	std::vector<std::size_t> path;
-	double pixels = 0.0;
-	double overRate = 0.0;
-	std::size_t changes = 0;
-};
-
-}
-
 OptimalPlan ComputeOptimal(const std::vector<TraceFrame>& a_trace, const CostModel& a_model,
 	double a_budgetMs, double a_intervalSeconds, double a_minDwellSeconds, double a_windowSeconds,
 	double a_overBudgetAllowance)
@@ -192,17 +178,8 @@ OptimalPlan ComputeOptimal(const std::vector<TraceFrame>& a_trace, const CostMod
 		return plan;
 	}
 
-	// One cost estimate per decision interval, per candidate preset. The P95 is
-	// used rather than the mean because that is what the controller judges on,
-	// so the target is computed on the same statistic it will be compared to.
-	struct Interval
-	{
-		std::array<double, kPresets.size()> cost{};
-	};
-	std::vector<Interval> intervals;
-
-	// Deduplicated samples with their recorded pixel fraction, so a rolling
-	// window can be taken over them exactly as the controller takes one.
+	// Deduplicated samples with the pixel fraction they were recorded at, so a
+	// rolling window can be taken over them exactly as the controller takes one.
 	struct Sample
 	{
 		double t = 0.0;
@@ -229,187 +206,179 @@ OptimalPlan ComputeOptimal(const std::vector<TraceFrame>& a_trace, const CostMod
 		return plan;
 	}
 
-	// The window must match the controller's, or this is not a bound: a P95 over
-	// half a second sits near the maximum and rejects presets a two-second P95
-	// accepts.
-	const double start = samples.front().t;
-	const double finish = samples.back().t;
-	std::size_t head = 0;
-	std::size_t tail = 0;
-	std::vector<double> window;
-	for (double at = start + a_windowSeconds; at <= finish; at += a_intervalSeconds) {
-		while (tail < samples.size() && samples[tail].t <= at) {
-			++tail;
-		}
-		while (head < tail && samples[head].t < at - a_windowSeconds) {
-			++head;
-		}
-		if (tail <= head) {
-			continue;
-		}
-		window.clear();
-		double fRecorded = samples[head].f;
-		for (std::size_t i = head; i < tail; ++i) {
-			window.push_back(samples[i].gpuMs);
-			fRecorded = samples[i].f;
-		}
-		std::sort(window.begin(), window.end());
-		const double p95 = PercentileSorted(window, 95.0);
+	// What each preset would have cost, per decision interval.
+	//
+	// The window must match the controller's. A P95 over half a second sits near
+	// the maximum and rejects presets a two-second P95 accepts, which made an
+	// earlier version of this report a stricter policy rather than a bound.
+	const std::size_t presets = kPresets.size();
+	std::vector<std::vector<double>> cost;
+	{
+		std::size_t head = 0;
+		std::size_t tail = 0;
+		std::vector<double> window;
+		const double finish = samples.back().t;
+		for (double at = samples.front().t + a_windowSeconds; at <= finish;
+			at += a_intervalSeconds) {
+			while (tail < samples.size() && samples[tail].t <= at) {
+				++tail;
+			}
+			while (head < tail && samples[head].t < at - a_windowSeconds) {
+				++head;
+			}
+			if (tail <= head) {
+				continue;
+			}
+			window.clear();
+			for (std::size_t i = head; i < tail; ++i) {
+				window.push_back(samples[i].gpuMs);
+			}
+			std::sort(window.begin(), window.end());
+			const double p95 = PercentileSorted(window, 95.0);
+			const double fRecorded = samples[tail - 1].f;
+			const double denominator = a_model.PredictMs(fRecorded);
 
-		Interval interval;
-		const double denominator = a_model.PredictMs(fRecorded);
-		for (std::size_t i = 0; i < kPresets.size(); ++i) {
-			const double f =
-				static_cast<double>(kPresets[i].scale) * static_cast<double>(kPresets[i].scale);
-			interval.cost[i] = denominator > 0.0 ? p95 * a_model.PredictMs(f) / denominator : p95;
+			std::vector<double> row(presets, p95);
+			if (denominator > 0.0) {
+				for (std::size_t i = 0; i < presets; ++i) {
+					const double f = static_cast<double>(kPresets[i].scale) *
+					                 static_cast<double>(kPresets[i].scale);
+					row[i] = p95 * a_model.PredictMs(f) / denominator;
+				}
+			}
+			cost.push_back(std::move(row));
 		}
-		intervals.push_back(interval);
 	}
-
-	if (intervals.empty()) {
+	if (cost.empty()) {
 		return plan;
 	}
 
-	// State: (preset, intervals held since the last change, capped). The cap is
-	// the dwell requirement, so "held long enough to move again" is a single
-	// state rather than an unbounded counter.
+	// State: (preset, intervals held since the last change, capped at the dwell).
 	const int dwell = std::max(1, static_cast<int>(a_minDwellSeconds / a_intervalSeconds + 0.5));
-	const std::size_t presets = kPresets.size();
-	const std::size_t states = presets * static_cast<std::size_t>(dwell + 1);
-	const double negative = -1.0e18;
-
-	const auto index = [dwell, presets](std::size_t a_preset, int a_held) {
-		(void)presets;
-		return a_preset * static_cast<std::size_t>(dwell + 1) +
-		       static_cast<std::size_t>(std::min(a_held, dwell));
+	const std::size_t slots = static_cast<std::size_t>(dwell) + 1;
+	const std::size_t states = presets * slots;
+	constexpr double kUnreachable = -1.0e18;
+	const auto index = [slots](std::size_t a_preset, int a_held) {
+		return a_preset * slots + static_cast<std::size_t>(a_held);
 	};
 
-
-	// Reward for an interval: the pixel fraction, less a penalty for running
-	// over budget. The penalty is a price rather than a prohibition, because
-	// the controller it is being compared against tolerates a small over-budget
-	// rate - and an optimum forbidden from doing so is not an upper bound on
-	// it, merely a stricter policy.
-	double penalty = 0.0;
-	const auto reward = [&](std::size_t a_intervalIndex, std::size_t a_preset) -> double {
-		const auto& interval = intervals[a_intervalIndex];
-		const double f =
-			static_cast<double>(kPresets[a_preset].scale) * static_cast<double>(kPresets[a_preset].scale);
-		return interval.cost[a_preset] <= a_budgetMs ? f : f - penalty;
+	struct Pass
+	{
+		std::vector<std::size_t> path;
+		double pixels = 0.0;
+		double overRate = 0.0;
 	};
 
-	// One pass at a fixed penalty. Bisected below to meet the allowance.
-	const auto solve = [&]() {
-		std::vector<double> previous(states, negative);
-		std::vector<std::vector<int>> choice(intervals.size(), std::vector<int>(states, -1));
-	for (std::size_t p = 0; p < presets; ++p) {
-		const double value = reward(0, p);
-		if (value > negative) {
-			previous[index(p, dwell)] = value;
-		}
-	}
+	// One dynamic-programming pass at a fixed price for running over budget.
+	const auto solve = [&](double a_penalty) {
+		const auto reward = [&](std::size_t a_interval, std::size_t a_preset) {
+			const double f = static_cast<double>(kPresets[a_preset].scale) *
+			                 static_cast<double>(kPresets[a_preset].scale);
+			return cost[a_interval][a_preset] <= a_budgetMs ? f : f - a_penalty;
+		};
 
-	for (std::size_t i = 1; i < intervals.size(); ++i) {
-		std::vector<double> current(states, negative);
+		std::vector<double> previous(states, kUnreachable);
+		std::vector<std::vector<int>> from(cost.size(), std::vector<int>(states, -1));
+
 		for (std::size_t p = 0; p < presets; ++p) {
-			for (int held = 0; held <= dwell; ++held) {
-				const double from = previous[index(p, held)];
-				if (from <= negative) {
-					continue;
-				}
-				// Hold.
-				const double holdValue = from + reward(i, p);
-				auto& holdSlot = current[index(p, std::min(held + 1, dwell))];
-				if (holdValue > holdSlot) {
-					holdSlot = holdValue;
-					choice[i][index(p, std::min(held + 1, dwell))] = static_cast<int>(p);
-				}
-				// Change, only once the dwell has elapsed.
-				if (held < dwell) {
-					continue;
-				}
-				for (std::size_t q = 0; q < presets; ++q) {
-					if (q == p) {
+			previous[index(p, dwell)] = reward(0, p);
+		}
+
+		for (std::size_t i = 1; i < cost.size(); ++i) {
+			std::vector<double> current(states, kUnreachable);
+			for (std::size_t p = 0; p < presets; ++p) {
+				for (int held = 0; held <= dwell; ++held) {
+					const double value = previous[index(p, held)];
+					if (value <= kUnreachable) {
 						continue;
 					}
-					const double moveValue = from + reward(i, q);
-					if (moveValue <= negative) {
+
+					// Hold: the dwell counter advances, capped.
+					const int nextHeld = std::min(held + 1, dwell);
+					const double holdValue = value + reward(i, p);
+					if (holdValue > current[index(p, nextHeld)]) {
+						current[index(p, nextHeld)] = holdValue;
+						from[i][index(p, nextHeld)] = static_cast<int>(p);
+					}
+
+					// Change: only once the dwell has elapsed.
+					if (held < dwell) {
 						continue;
 					}
-					auto& slot = current[index(q, 0)];
-					if (moveValue > slot) {
-						slot = moveValue;
-						choice[i][index(q, 0)] = static_cast<int>(p);
+					for (std::size_t q = 0; q < presets; ++q) {
+						if (q == p) {
+							continue;
+						}
+						const double moveValue = value + reward(i, q);
+						if (moveValue > current[index(q, 0)]) {
+							current[index(q, 0)] = moveValue;
+							from[i][index(q, 0)] = static_cast<int>(p);
+						}
 					}
 				}
 			}
+			previous.swap(current);
 		}
-		previous.swap(current);
-	}
 
-	std::size_t bestState = 0;
-	double bestValue = negative;
-	for (std::size_t s = 0; s < states; ++s) {
-		if (previous[s] > bestValue) {
-			bestValue = previous[s];
-			bestState = s;
+		Pass pass;
+		std::size_t bestState = 0;
+		double bestValue = kUnreachable;
+		for (std::size_t s = 0; s < states; ++s) {
+			if (previous[s] > bestValue) {
+				bestValue = previous[s];
+				bestState = s;
+			}
 		}
-	}
-	if (bestValue <= negative) {
-		return plan;
-	}
+		if (bestValue <= kUnreachable) {
+			return pass;
+		}
 
-	// Walk the choices back to recover the trajectory.
-	std::vector<std::size_t> path(intervals.size());
-	std::size_t state = bestState;
-	for (std::size_t i = intervals.size(); i-- > 0;) {
-		const std::size_t preset = state / static_cast<std::size_t>(dwell + 1);
-		path[i] = preset;
-		if (i == 0) {
-			break;
+		// Walk the choices back to recover the trajectory.
+		pass.path.assign(cost.size(), 0);
+		std::size_t state = bestState;
+		for (std::size_t i = cost.size(); i-- > 0;) {
+			pass.path[i] = state / slots;
+			if (i == 0) {
+				break;
+			}
+			const int previousPreset = from[i][state];
+			if (previousPreset < 0) {
+				break;
+			}
+			const int held = static_cast<int>(state % slots);
+			// Held 0 means this interval was the change, so the previous state
+			// had waited out the full dwell; otherwise it held one fewer.
+			state = index(static_cast<std::size_t>(previousPreset), held == 0 ? dwell : held - 1);
 		}
-		const int from = choice[i][state];
-		if (from < 0) {
-			break;
-		}
-		const int held = static_cast<int>(state % static_cast<std::size_t>(dwell + 1));
-		state = index(static_cast<std::size_t>(from), held == 0 ? dwell : held - 1);
-	}
 
-	double pixels = 0.0;
-	std::size_t over = 0;
-	for (std::size_t i = 0; i < path.size(); ++i) {
-		const auto& info = kPresets[path[i]];
-		pixels += static_cast<double>(info.scale) * static_cast<double>(info.scale);
-		if (intervals[i].cost[path[i]] > a_budgetMs) {
-			++over;
+		double pixels = 0.0;
+		std::size_t over = 0;
+		for (std::size_t i = 0; i < pass.path.size(); ++i) {
+			const double f = static_cast<double>(kPresets[pass.path[i]].scale) *
+			                 static_cast<double>(kPresets[pass.path[i]].scale);
+			pixels += f;
+			if (cost[i][pass.path[i]] > a_budgetMs) {
+				++over;
+			}
 		}
-		if (i > 0 && path[i] != path[i - 1]) {
-			++plan.changes;
-		}
-	}
-
-	const double n = static_cast<double>(path.size());
-		OptimalPass pass;
-		pass.path = path;
+		const double n = static_cast<double>(pass.path.size());
 		pass.pixels = pixels / n;
 		pass.overRate = static_cast<double>(over) / n;
-		pass.changes = plan.changes;
-		plan.changes = 0;
-		plan.trajectory.clear();
 		return pass;
 	};
 
-	// Bisect the penalty until the optimum spends no more of its time over
-	// budget than the controller is allowed to. A penalty of zero maximises
-	// pixels and ignores the budget; a large one refuses every risk.
-	double low = 0.0;
-	double high = 100.0;
-	OptimalPass best = solve();
+	// Price over-budget intervals until the plan spends no more time over budget
+	// than the controller is allowed to. Zero price maximises pixels and ignores
+	// the budget; a large one refuses every risk. Anything in between trades at
+	// a rate, and bisection finds the cheapest price that satisfies the
+	// allowance.
+	Pass best = solve(0.0);
 	if (best.overRate > a_overBudgetAllowance) {
-		for (int iteration = 0; iteration < 40; ++iteration) {
-			penalty = 0.5 * (low + high);
-			const auto pass = solve();
+		double low = 0.0;
+		double high = 100.0;
+		for (int iteration = 0; iteration < 32; ++iteration) {
+			const double penalty = 0.5 * (low + high);
+			const auto pass = solve(penalty);
 			if (pass.overRate > a_overBudgetAllowance) {
 				low = penalty;
 			} else {
@@ -417,6 +386,9 @@ OptimalPlan ComputeOptimal(const std::vector<TraceFrame>& a_trace, const CostMod
 				best = pass;
 			}
 		}
+	}
+	if (best.path.empty()) {
+		return plan;
 	}
 
 	for (std::size_t i = 0; i < best.path.size(); ++i) {
