@@ -276,7 +276,15 @@ OptimalPlan ComputeOptimal(const std::vector<TraceFrame>& a_trace, const CostMod
 	}
 
 	// State: (preset, intervals held since the last change, capped at the dwell).
-	const int dwell = std::max(1, static_cast<int>(a_minDwellSeconds / a_intervalSeconds + 0.5));
+	//
+	// Clamped to the trace length: a dwell longer than the capture means "never
+	// change", which the table already expresses, and it keeps the state index
+	// inside the 16 bits the predecessor array stores.
+	// 9000 keeps presets * (dwell + 1) inside 16 bits; missed.size() is at least
+	// 1 here, so the upper bound is never below the lower.
+	const int dwellLimit = static_cast<int>(std::min<std::size_t>(missed.size(), 9000));
+	const int dwell =
+		std::clamp(static_cast<int>(a_minDwellSeconds / a_intervalSeconds + 0.5), 1, dwellLimit);
 	const std::size_t slots = static_cast<std::size_t>(dwell) + 1;
 	const std::size_t states = presets * slots;
 	constexpr double kUnreachable = -1.0e18;
@@ -335,10 +343,21 @@ OptimalPlan ComputeOptimal(const std::vector<TraceFrame>& a_trace, const CostMod
 
 	std::vector<double> previous(states * levels, kUnreachable);
 	std::vector<double> current(states * levels, kUnreachable);
-	// Which preset the trajectory came from. The rest of the predecessor is
-	// derivable, so one byte per cell keeps this in tens of megabytes.
-	std::vector<std::vector<std::int8_t>> from(
-		missed.size(), std::vector<std::int8_t>(states * levels, -1));
+
+	// The FULL predecessor state, not just its preset.
+	//
+	// Storing the preset alone and re-deriving the dwell counter is wrong, and
+	// was wrong here from the first version. `nextHeld = min(held + 1, dwell)`
+	// means a state at `held == dwell` has two possible predecessors - dwell-1,
+	// or dwell again, already capped - and re-derivation can only guess one. On
+	// a wrong guess the walk lands on a cell that was never written, breaks, and
+	// leaves the entire earlier prefix at preset index 0. The plan then reports
+	// a figure BELOW the optimum the table actually found, by an amount that
+	// varies with the dwell, which is what broke monotonicity: 0.382 at a 1.0 s
+	// dwell against 0.410 at 5.0 s.
+	constexpr std::uint16_t kNoPredecessor = 0xFFFFu;
+	std::vector<std::vector<std::uint16_t>> from(
+		missed.size(), std::vector<std::uint16_t>(states * levels, kNoPredecessor));
 
 	for (std::size_t p = 0; p < presets; ++p) {
 		const std::size_t spend = charge(missed[0][p]);
@@ -366,7 +385,7 @@ OptimalPlan ComputeOptimal(const std::vector<TraceFrame>& a_trace, const CostMod
 						const double holdValue = value + gain(i, p);
 						if (holdValue > current[to]) {
 							current[to] = holdValue;
-							from[i][to] = static_cast<std::int8_t>(p);
+							from[i][to] = static_cast<std::uint16_t>(state);
 						}
 					}
 
@@ -386,7 +405,7 @@ OptimalPlan ComputeOptimal(const std::vector<TraceFrame>& a_trace, const CostMod
 						const double moveValue = value + gain(i, q);
 						if (moveValue > current[to]) {
 							current[to] = moveValue;
-							from[i][to] = static_cast<std::int8_t>(p);
+							from[i][to] = static_cast<std::uint16_t>(state);
 						}
 					}
 				}
@@ -417,16 +436,15 @@ OptimalPlan ComputeOptimal(const std::vector<TraceFrame>& a_trace, const CostMod
 		if (i == 0) {
 			break;
 		}
-		const int previousPreset = from[i][at(state, budget)];
-		if (previousPreset < 0) {
+		const std::uint16_t previousState = from[i][at(state, budget)];
+		if (previousState == kNoPredecessor) {
 			break;
 		}
+		// The budget is derivable - this interval's own charge came out of it -
+		// but the state is not, so it is read back rather than reconstructed.
 		const std::size_t spend = charge(missed[i][preset]);
 		budget = budget >= spend ? budget - spend : 0;
-		const int held = static_cast<int>(state % slots);
-		// Held 0 means this interval was the change, so the previous state had
-		// waited out the full dwell; otherwise it held one fewer.
-		state = index(static_cast<std::size_t>(previousPreset), held == 0 ? dwell : held - 1);
+		state = previousState;
 	}
 
 	// Frame-weighted, to match Replay: an interval holding fewer frames must not
