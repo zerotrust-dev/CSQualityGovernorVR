@@ -163,25 +163,35 @@ bool CaptureEye(std::size_t a_index, const Texture_t* a_texture)
 	                     held.desc.SampleDesc.Count == sourceDesc.SampleDesc.Count;
 
 	if (!matches) {
-		// CopyResource demands identical dimensions, format, mips, array size
-		// and sample count, so those are taken from the source unchanged. The
-		// rest is ours to choose: no CPU access, no shared handles, and bind
-		// flags the compositor can read.
+		// The source description VERBATIM. Nothing here is ours to improve.
+		//
+		// The first version overrode MiscFlags and BindFlags on the reasoning
+		// that we only needed something the compositor could read. That produced
+		// a view split into rectangles with a black patch in one eye - the look
+		// of a texture read with the wrong memory layout (E-42). OpenComposite
+		// hands these on to an OpenXR runtime, which needs the sharing flags the
+		// game created them with; clearing MiscFlags took those away.
+		//
+		// A copy that is to be handed back in place of the original has to BE
+		// the original in every respect the runtime can observe.
 		D3D11_TEXTURE2D_DESC desc = sourceDesc;
-		desc.Usage = D3D11_USAGE_DEFAULT;
-		desc.CPUAccessFlags = 0;
-		desc.MiscFlags = 0;
-		desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
 
 		held.texture.Reset();
 		held.valid = false;
 		if (FAILED(g_device->CreateTexture2D(&desc, nullptr, held.texture.GetAddressOf()))) {
 			logger::warn("[CompositorTimer] could not create the hold texture for eye {} "
-						 "({}x{}); falling back to withholding the frame",
-				a_index, sourceDesc.Width, sourceDesc.Height);
+						 "({}x{} fmt {} misc 0x{:X} bind 0x{:X}); falling back to withholding",
+				a_index, sourceDesc.Width, sourceDesc.Height,
+				static_cast<int>(sourceDesc.Format), sourceDesc.MiscFlags, sourceDesc.BindFlags);
 			return false;
 		}
 		held.desc = desc;
+		// Logged once per size change, so the next diagnosis starts from facts
+		// rather than from what the texture was assumed to be.
+		logger::info("[CompositorTimer] hold texture eye {}: {}x{} fmt {} array {} samples {} "
+					 "misc 0x{:X} bind 0x{:X}",
+			a_index, desc.Width, desc.Height, static_cast<int>(desc.Format), desc.ArraySize,
+			desc.SampleDesc.Count, desc.MiscFlags, desc.BindFlags);
 	}
 
 	g_context->CopyResource(held.texture.Get(), source);
