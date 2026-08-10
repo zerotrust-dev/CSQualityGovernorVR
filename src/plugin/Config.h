@@ -86,6 +86,14 @@ struct PluginConfig
 	// presets read the same 13.9 ms and every climb is a blind probe.
 	bool useOwnGpuTimer = true;
 
+	// D-22: the build confirmed to carry CSX's transition-profile API.
+	//
+	// Exact match only. That API's preflight sits at vtable slot 23, where our
+	// own header has GetLastFrameGpuTimeUs - both call themselves revision 4,
+	// so nothing but an exact build number distinguishes them (E-34, E-36).
+	// 0 disables the path and falls back to SetUpscalePreset.
+	int transitionApiCsBuild = 11;
+
 	// Circuit breaker: disable the governor for the session if it applies more
 	// changes than this in any rolling minute.
 	//

@@ -1,5 +1,6 @@
 #include "ApiProbe.h"
 #include "CompositorTimer.h"
+#include "CSXTransitionApi.h"
 #include "Config.h"
 #include "Reporter.h"
 #include "core/CyclerCore.h"
@@ -49,6 +50,14 @@ std::string TimeStamp()
 bool g_ownGpuTimer = false;
 bool g_csGpuTimer = false;
 
+// D-22: CSX's transition-profile API, or null.
+//
+// Non-null ONLY when getBuildNumber() is an exact match for a build confirmed
+// to carry it at slot 23. Never inferred from the revision: ours and theirs
+// both say 4, and slot 23 holds a different function in each (E-34, E-36).
+CSXInterface001* g_csxTransition = nullptr;
+CSXInterface001* TransitionApi() noexcept { return g_csxTransition; }
+
 // ---------------------------------------------------------------------------
 // Real CS API, behind the same interface the tests fake.
 //
@@ -78,6 +87,12 @@ public:
 		return Preset::NativeAA;
 	}
 
+	// D-22: apply through CS's transition path when the build has it.
+	//
+	// SetUpscalePreset changes the render scale with no fade, so the relatch is
+	// visible - a gridded panel for a split second on every change (E-38). CSX
+	// documents the contract for external controllers: preflight, and on kApply
+	// schedule the door fade and apply for the current method.
 	void SetPreset(Preset a_preset) override
 	{
 		if (!g_CSInterface) {
@@ -87,8 +102,34 @@ public:
 		if (!info) {
 			return;
 		}
-		g_CSInterface->SetUpscalePreset(
-			static_cast<CSPluginAPI::UpscalePreset>(info->publicValue));
+		const auto preset = static_cast<CSPluginAPI::UpscalePreset>(info->publicValue);
+
+		if (auto* csx = TransitionApi()) {
+			const auto method = csx->GetUpscaleMethod();
+			const bool renderScale = csx->GetRenderAtUpscaleResEnabled();
+			const auto profile = csx->GetDLSSProfile();
+
+			const auto decision = static_cast<TransitionDecision>(
+				csx->GetVRUpscalingTransitionProfileDecision(method, renderScale, preset, profile));
+
+			switch (decision) {
+			case TransitionDecision::NoChange:
+				// Already there. Applying anyway would schedule a fade for a
+				// change that does not exist - a flash bought for nothing.
+				return;
+			case TransitionDecision::Blocked:
+				// Leave it to the caller's buffer-and-retry. Asking first is the
+				// difference between deferring and being refused.
+				return;
+			case TransitionDecision::Apply:
+				csx->SetVRUpscalingTransitionProfileForMethod(
+					method, renderScale, preset, profile);
+				return;
+			}
+			return;
+		}
+
+		g_CSInterface->SetUpscalePreset(preset);
 	}
 
 	std::uint32_t BlockReasons() override
@@ -922,6 +963,22 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message)
 				// D-21: try our own brackets first. They work against whatever
 				// CS the modlist ships, so the fork stops being something Rik
 				// has to run and goes back to being only the upstream patch.
+				// D-22. Exact build match, for the same reason as everything
+				// else here: their slot 23 is the preflight, ours is the GPU
+				// timer, and both builds answer "revision 4".
+				if (g_config.transitionApiCsBuild > 0 &&
+					build == static_cast<unsigned int>(g_config.transitionApiCsBuild)) {
+					g_csxTransition = reinterpret_cast<CSXInterface001*>(g_CSInterface);
+					logger::info("preset changes will use CS's transition-profile API "
+								 "(build {}): preflight, then the door fade, instead of "
+								 "setting the preset underneath the renderer",
+						build);
+				} else {
+					logger::info("preset changes will use SetUpscalePreset (build {} is not the "
+								 "transition-API build {}); a change may show the relatch",
+						build, g_config.transitionApiCsBuild);
+				}
+
 				g_ownGpuTimer = g_config.useOwnGpuTimer && CompositorTimer::Install();
 				if (g_ownGpuTimer) {
 					logger::info("GPU timing from our own compositor hooks (D-21); works "

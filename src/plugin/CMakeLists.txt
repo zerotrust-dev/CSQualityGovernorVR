@@ -27,6 +27,7 @@ target_sources(
         Reporter.h
         CompositorTimer.cpp
         CompositorTimer.h
+        CSXTransitionApi.h
         FrameGpuTimer.cpp
         FrameGpuTimer.h
         PCH.h
