@@ -791,6 +791,58 @@ confident wrong reading for the third time in this project.
 Not addressed here: `margin_down` stays at 0.0. The band width is the live
 question (Q-11), and it is being answered by a sweep rather than by argument.
 
+### D-22 (PROPOSED, not implemented) — Apply presets through CS's transition-profile API, not `SetUpscalePreset`
+
+**Challenges:** nothing decided. It replaces plumbing written when the only
+available path was `SetUpscalePreset()`, which was true of PL3.15 and is no
+longer true of CSX 3.18.
+
+**The evidence: E-38.** Every governor-applied change on RC3 produced a visible
+gridded panel for a split second. It stopped when changes stopped, and it never
+happened during calibration. Meanwhile `kTransitionPending` was reported 11
+times — we asked CS to change while a transition was already in flight.
+
+**What CS now expects.** Its header states the contract for external
+controllers: preflight with
+`GetVRUpscalingTransitionProfileDecision(method, renderScaleMode, preset, profile)`,
+then act on the answer.
+
+- `kBlocked` — buffer the desired profile and retry later.
+- `kNoChange` — settings and the physical render-scale contract already match,
+  so the caller **must not schedule a fade**.
+- `kApply` — schedule the door fade, then call
+  `SetVRUpscalingTransitionProfileForMethod`.
+
+We do none of this. We call the old setter, which changes the render scale with
+no fade to hide the relatch — hence the artefact.
+
+**The proposal.** Route every apply through the preflight, and use the fade path
+on `kApply`. Three things follow, and only the first is about the artefact:
+
+1. The transition is hidden, as CS intends.
+2. `kNoChange` removes applies that were never going to change anything — the
+   flash-for-nothing case, at zero cost in quality.
+3. Our hand-rolled block/retry plumbing is replaced by the authority's own
+   answer, so it stops being ours to keep correct across release candidates.
+   This is the direct payoff of the RC plan's step 0: the release notes never
+   mentioned this API; the header did.
+
+**Fallback, and why it must stay.** `SetUpscalePreset` remains the path when the
+preflight is unavailable — the API is revision-gated, and PL3.15 does not have
+it. E-34 applies with full force: the new methods must be called **only** on a
+build confirmed to have them, by exact match, never by a revision or build
+number being "at least" something.
+
+**Expected effect, stated in advance.** The artefact disappears; the number of
+applies falls slightly as `kNoChange` filters no-op changes; the pixel fraction
+is unchanged, because this decides *how* a change is made, not *whether*. If
+pixel fraction moves materially, something else changed and the result should be
+distrusted.
+
+**Refutation condition.** If the artefact survives the fade path, it is not the
+missing fade, and the cause is elsewhere — most likely the relatch itself, in
+which case this is withdrawn rather than tuned.
+
 ### D-21 — Measure GPU time from our own plugin; keep the fork only as the upstream patch
 
 **Challenges:** D-11's choice of *where* to bracket. It does **not** challenge
@@ -1604,6 +1656,8 @@ includes questions about somebody else's instrument.
 
 ## 8. Open Questions
 
+| E-39 | **RC3's cost curve is much steeper than RC2's, and D-21's timer is what showed it.** First honest 4-sweep calibration on CSX 3.18 (2 000 deduplicated samples per rung): UltraPerformance **10.28 ms** → NativeAA **19.48 ms**, fitting `t_fixed` **5.00 ms**, `t_scaled` **13.76 ms**, **k = 2.75**, worst residual 0.72 ms. Against RC2's 1.29 (light) and 0.95 (marginal), **k has roughly doubled**: RC3 is far more resolution-sensitive, so a rung is worth more and the ladder is a stronger lever than it was. Also confirms the sweep-count decision empirically — the same capture run at `Sweeps = 1` fitted `t_fixed = −0.18 ms`, a negative fixed cost, purely from the ladder-position bias that serpentine needs an even count to cancel. | `20260810_160355_frames.csv` |
+| E-38 | **We drive CS 3.18 through an API it has moved past, and it shows on screen.** With `ApplyGovernor = 1` on RC3, the player reported a flat gridded panel flashing for a split second **on each governor preset change**, absent during the calibration sweep and absent at the end of the session. The timeline matches exactly: 8 applies between t=286 s and t=440 s, then every later decision **deferred** — so no preset actually changed after 447 s and the artefact stopped. Block reasons observed across the run: `0x0` ×820, **`0x4` kLoadingMenu ×43**, **`0x10` kTransitionPending ×11**, `0x8` kRelatchPending ×1. Our `SetPreset` calls `SetUpscalePreset()`, the PL3.15 path, while CSX 3.18 documents that external controllers should preflight with `GetVRUpscalingTransitionProfileDecision` and, on `kApply`, *"schedule the existing door fade and immediately call `SetVRUpscalingTransitionProfileForMethod`"*. We schedule no fade, so the un-faded intermediate frame is visible; and `kTransitionPending` ×11 shows we asked while a transition was already in flight. The player's own diagnosis — *"like in cs2 but in cs3 that causes a side effect"* — was correct. | `20260810_160355_timeline.csv`, `_apistate.csv` |
 | E-37 | **The plugin-side hook works; a flag meaning two things crashed the game anyway.** Third startup crash on RC3, and the log shows the hook succeeding exactly as designed: *"compositor found: IVRCompositor_022"*, *"hooked WaitGetPoses (slot 2) and Submit (slot 5) after 2 attempt(s)"*, *"GPU timing is live"* — then an access violation at that same timestamp, stack `CommunityShaders.dll ← CSQualityGovernorVR.dll ×3`. Cause: `ApiSnapshot::Capture(g_CSInterface, g_gpuTiming)`. `g_gpuTiming` means *"we have GPU timing from somewhere"*; `Capture` reads its argument as *"the CS interface has the timing methods"* and calls them. Our own timer going live flipped that flag true and the next snapshot called `GetLastFrameGpuTimeUs` on build 11. **This is E-34's root cause at a second call site**, and it survived the E-34 fix because that fix hardened the capability *test* while leaving a caller that never consulted it. Tally across the three RC3 crashes: **two were this same one-flag-two-meanings error, one was the interface-version walk (E-36); none were the hooking mechanism**, which the log shows working on its second attempt. | `crash-2026-08-10-15-30-22.log`, `CSQualityGovernorVR.log` |
 | E-36 | **An OpenVR interface version is not a version number, it is a different object.** D-21's first working hook crashed the game at the main menu. `FindCompositor` walked interface versions newest-first and took whatever answered; OpenComposite exports up to `IVRCompositor_024`, so it returned a **024 wrapper**, and slots 2 and 5 were patched on that. Wrong twice: vtable indices do not carry the same meaning across interface versions, and the game never calls through that object, so nothing would have been measured even had it survived. Scanning `SkyrimVR.exe` shows it references exactly one compositor version — **`IVRCompositor_022`** — which is also the interface the fork's slot 2 / slot 5 were validated against. Now requested by name. The general lesson is E-34's, arriving from the other direction: a version number that is not an exact, checked match is not evidence, whether it comes from a fork's build number or from an ABI string. | `SkyrimVR.exe` string scan; crash at menu on `a1a611e` |
 | E-35 | **What CSX 3.18 changed, read from source rather than release notes.** MGO 4.0beta RC3 ships **CSX 3.18-VR** (`csx-3-VR`, archive `2026-08-09T14-05Z`, build 11) — the Particle Lights fork renamed to "Community Shaders Expanded", same Nexus 166950. Four findings, each of which would have cost a session to learn the hard way. **(1) The ladder is unchanged:** `GetQualityModeResolutionScale` returns exactly our seven values with the same internal indices, so every pixel fraction, the cost model and the optimum survive the move; `VerifiedCsBuild` is therefore 11. **(2) CS still does not measure GPU time.** Their own `VR_PERFORMANCE_HANDOVER.md`: *"This is a static code analysis, not a profiler capture… must be validated with RenderDoc, Tracy, or the in-game performance overlay."* The overlay is for humans, not an API — so there is nothing to defer to and D-21 stands. **(3) They added a preflight FOR external controllers:** `GetVRUpscalingTransitionProfileDecision()` returning `kBlocked` / `kNoChange` / `kApply`, documented *"External transition controllers should query this before applying VR upscaling profiles"*, where `kNoChange` means the caller **must not schedule a fade**. That supersedes our hand-rolled block/retry/redundant-apply plumbing and directly removes flashes that achieve nothing. **(4) Foveation reduces shader work per pixel, not pixel count** — *"Center: full current quality… Periphery: reduce or skip only expensive detail terms"* — so `f = scale²` remains valid, but `t_scaled` moves with it, which makes foveation settings a confound that must be held fixed across a measured session. | `csx-3-VR` source; `VR_PERFORMANCE_HANDOVER.md`; `MGO-Presets/CSX NVIDIA- Quality/SettingsUser.json` |
