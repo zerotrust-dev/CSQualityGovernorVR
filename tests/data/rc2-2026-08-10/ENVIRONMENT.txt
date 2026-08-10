@@ -1,0 +1,13 @@
+# MGO 4.0beta RC2 environment snapshot
+# taken 2026-08-10T08:17Z, immediately before installing RC3
+
+MO2 instance: C:\Data\Games\SkyrimVR MGO 4.0 beta
+game folder (shared): C:\Data\SteamLibrary\steamapps\common\SkyrimVR
+
+## Community Shaders
+modid=166950
+version=PL3.15
+installationFile=Community Shaders Particle Lights VR 166950 PL3.15 2026-07-09T21-13Z uhRBKsrxY.7z
+
+## enabled mod count
+1705

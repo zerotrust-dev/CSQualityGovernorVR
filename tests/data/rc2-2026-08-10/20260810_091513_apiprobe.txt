@@ -1,0 +1,21 @@
+===== Community Shaders API probe =====
+  revision requested : 4
+  revision acquired  : 4
+  build number       : 9
+  ---------------------------------------------------------------
+  getBuildNumber                         9
+  GetUpscalePreset                       2 (Balanced)
+  GetUpscaleMethod                       3 (DLSS)
+  GetDLSSProfile                         1 (K)
+  GetRenderAtUpscaleResEnabled           false
+  GetRenderAtUpscaleResActive            false
+  GetVRUpscalingApplyBlockReasons        0x4 (LoadingMenu)
+  IsVRUpscalingProfileApplyAllowed       false
+                                           note: not allowed right now - may simply be a loading screen
+  GetLastFrameGpuTimeUs                  1423 us (frame 5095)
+  GetSSSEnabled                          true
+  GetSSGIEnabled                         true
+  GetVolumetricLightingExteriorEnabled   true
+  GetLightLimitFixContactShadowsEnabled  true
+  verdict: all getters responded plausibly
+=======================================

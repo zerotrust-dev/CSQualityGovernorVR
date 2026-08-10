@@ -1,0 +1,41 @@
+CS Quality Governor - cycler session 20260810_085403
+CS build 9 | target 72.0 Hz (budget 13.889 ms) | sweeps 4 | dwell 8.0s
+frame budget: 13.889 ms
+transitions recorded: 28
+
+preset            scale  visits  mean_ms   spread    drift   p95_ms  worst_p95   miss%   drop%  worstdrop%  settle_s  timeouts  rbfail  blocked  failed
+----------------------------------------------------------------------------------------------------------------------------------------------
+NativeAA           1.00       4    16.44     4.81    +2.08    18.04      23.17    99.2     7.9        31.5     0.899         0       0        0       0
+Quality            0.67       4    14.04     1.63    +0.13    14.71      15.83    53.7     0.4         1.4     0.877         0       0        0       0
+Balanced           0.59       4    13.79     0.50    -0.24    14.13      14.50    45.1     0.0         0.0     0.733         0       0        0       0
+Performance        0.50       4    13.91     0.03    +0.01    14.00      14.00    50.3     0.0         0.0     0.735         0       0        0       0
+UltraPerformance   0.33       4    13.97     0.29    +0.15    14.04      14.17    49.4     0.4         1.5     0.767         0       0        0       0
+Hoshipa            0.85       4    15.07     4.11    +2.14    16.33      19.17    65.5     0.0         0.0     0.878         0       0        0       0
+UltraQuality       0.77       4    14.29     2.41    +1.23    15.04      16.83    50.1     0.0         0.0     0.785         0       0        0       0
+
+Notes
+  p95/worst_p95 matter more than mean: a locked framerate is lost at the
+  tail, not on average.
+  drop% is the number that matters: frames that missed the interval
+  outright (>1.5x budget) rather than merely exceeding it. This is what
+  is felt as stutter when turning the head.
+  miss% is NOT a stutter metric. Held at the refresh rate, frametime
+  sits exactly ON the budget, so jitter puts ~half the frames just above
+  it - the 2026-08-03 run read 33-44% miss in a scene that felt perfect.
+  Read it as a margin gauge instead: ~0% means real headroom, ~30-50%
+  means sitting on the cap, >80% means genuinely over budget.
+  spread is max-min of the per-visit mean. If spread is comparable to the
+  gap between two presets, those presets are not distinguishable in this
+  scene and the ranking between them means nothing.
+  drift is ascending-sweep mean minus descending-sweep mean. Near zero is
+  a stable scene. Large and same-signed across every preset means the
+  session drifted and the absolute numbers are not comparable to another
+  session - though the ranking within this one still survives, which is
+  the reason for reversing alternate sweeps.
+  settle_s is time from the API call to a stable frametime.
+  rbfail counts visits where GetUpscalePreset() did not return the value
+  just set - if non-zero, the API is not doing what it claims.
+  failed counts visits that never applied and so produced no frames.
+  They are excluded from every average above rather than being averaged
+  in as 0 ms. A non-zero value means 'visits' is smaller than the number
+  of sweeps, so the remaining averages rest on fewer samples.
