@@ -46,6 +46,25 @@ struct PluginConfig
 	// has bitten this project repeatedly, and the cycler owns it until then.
 	bool applyGovernor = false;
 
+	// The Community Shaders build the preset ladder was verified against.
+	//
+	// Presets.h hardcodes each quality mode's resolution scale, copied by hand
+	// from CS's Upscaling.h, and the VR API exposes no way to ask for them - it
+	// can set and get the preset, not its scale. So every pixel fraction, the
+	// cost model, and the score against the optimum rest on a table that a CS
+	// update can silently invalidate. PL3.17's notes describe a "major VR
+	// Render Scale upgrade", so this is a live risk on the coming MGO release
+	// candidates rather than a theoretical one.
+	//
+	// This does not verify the scales - nothing available can. It detects that
+	// CS changed underneath the table, which is the honest check we can make,
+	// and turns a silent wrong number into a loud refusal. Set to 0 to disable
+	// the check; raise it after re-verifying the ladder against the new source.
+	int verifiedCsBuild = 9;
+	// What to do when the build differs. Refusing is the safe default: wrong
+	// pixel fractions do not look wrong, they just quietly rank everything.
+	bool requireVerifiedCsBuild = true;
+
 	// Circuit breaker: disable the governor for the session if it applies more
 	// changes than this in any rolling minute.
 	//

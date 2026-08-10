@@ -25,6 +25,18 @@ public:
 
 	void SetSessionInfo(std::string a_info) { _sessionInfo = std::move(a_info); }
 
+	// Lines written as "# key=value" above the capture's header row.
+	//
+	// A capture that does not say what produced it cannot be compared with one
+	// from a different mod list, and the two committed captures are already
+	// implicitly "MGO 4.0beta RC2 + CS PL3.15" with nothing in the files saying
+	// so. With release candidates arriving that is a fact worth losing once.
+	//
+	// The preset ladder goes in here too. The scales are hardcoded and the CS
+	// API cannot report them, so recording what was assumed at capture time is
+	// the only way a later replay can tell whether they still hold.
+	void SetProvenance(std::vector<std::string> a_lines) { _provenance = std::move(a_lines); }
+
 	bool OpenTransitions();
 	bool OpenFrames();
 	bool OpenApiState(std::string_view a_header);
@@ -75,6 +87,7 @@ private:
 	std::filesystem::path _directory;
 	std::string _stamp;
 	std::string _sessionInfo;
+	std::vector<std::string> _provenance;
 	std::ofstream _transitions;
 	std::ofstream _frames;
 	std::ofstream _apiState;

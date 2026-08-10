@@ -46,10 +46,18 @@ std::vector<TraceFrame> ParseTrace(std::istream& a_stream)
 	// Column order is taken from the header rather than assumed, because the
 	// capture format has already gained columns twice (gpu_us, then wall_ms)
 	// and a positional parser would have read the wrong ones silently.
+	// Provenance lines come first, as "# key=value". Skipped rather than parsed
+	// here: the capture records what produced it - CS build, API revision, the
+	// assumed preset ladder - and a reader that took the first line as the
+	// header would read "# cs_build=9" as a column name and then find no
+	// columns it recognised, which fails as an empty result rather than as an
+	// error.
 	std::vector<std::string> header;
-	if (!std::getline(a_stream, line)) {
-		return trace;
-	}
+	do {
+		if (!std::getline(a_stream, line)) {
+			return trace;
+		}
+	} while (!line.empty() && line.front() == '#');
 	header = SplitFields(line);
 
 	const auto indexOf = [&header](std::string_view a_name) -> int {
@@ -74,7 +82,7 @@ std::vector<TraceFrame> ParseTrace(std::istream& a_stream)
 	}
 
 	while (std::getline(a_stream, line)) {
-		if (line.empty()) {
+		if (line.empty() || line.front() == '#') {
 			continue;
 		}
 		const auto fields = SplitFields(line);

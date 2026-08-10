@@ -142,6 +142,9 @@ PluginConfig PluginConfig::Load(const std::filesystem::path& a_path)
 	config.writeTimelineCsv = ini.GetBool("WriteTimelineCsv", config.writeTimelineCsv);
 	config.monitorPreset = ini.GetInt("MonitorPreset", config.monitorPreset);
 	config.applyGovernor = ini.GetBool("ApplyGovernor", config.applyGovernor);
+	config.verifiedCsBuild = ini.GetInt("VerifiedCsBuild", config.verifiedCsBuild);
+	config.requireVerifiedCsBuild =
+		ini.GetBool("RequireVerifiedCsBuild", config.requireVerifiedCsBuild);
 	config.maxChangesPerMinute = ini.GetInt("MaxChangesPerMinute", config.maxChangesPerMinute);
 	config.targetHz = ini.GetDouble("TargetHz", config.targetHz);
 

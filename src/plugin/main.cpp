@@ -9,8 +9,11 @@
 #include <atomic>
 #include <chrono>
 #include <deque>
+#include <format>
 #include <optional>
+#include <string>
 #include <thread>
+#include <vector>
 
 CSPluginAPI::ICSInterface001* g_CSInterface = nullptr;
 
@@ -708,6 +711,32 @@ void BeginSession()
 		logger::error("API probe reported problems - see the CHECK lines above");
 	}
 
+	{
+		// What produced this capture. Written into the file rather than kept in
+		// someone's head: the two captures already committed are implicitly
+		// "MGO 4.0beta RC2 + CS PL3.15" and nothing in them says so, which is a
+		// mistake worth making only once now that release candidates are
+		// arriving. The ladder is included because it is hardcoded and CS cannot
+		// be asked for it, so a later replay has no other way to tell whether
+		// the scales it assumes are the ones that were in force.
+		std::vector<std::string> provenance;
+		provenance.push_back(std::format("cs_build={}", g_api.BuildNumber()));
+		provenance.push_back(std::format("cs_api_revision={}", g_revisionAcquired));
+		provenance.push_back(std::format("verified_cs_build={}", g_config.verifiedCsBuild));
+		provenance.push_back(std::format("gpu_timing={}", g_gpuTiming ? "yes" : "no"));
+		provenance.push_back(std::format("frame_budget_ms={:.3f}", g_config.cycler.frameBudgetMs));
+		provenance.push_back(std::format("apply_governor={}", g_config.applyGovernor ? 1 : 0));
+		std::string ladder;
+		for (const auto& info : kPresets) {
+			if (!ladder.empty()) {
+				ladder += ',';
+			}
+			ladder += std::format("{}:{:.6f}", info.name, info.scale);
+		}
+		provenance.push_back("preset_scales=" + ladder);
+		g_reporter->SetProvenance(std::move(provenance));
+	}
+
 	if (g_config.writeCsv && !g_reporter->OpenTransitions()) {
 		logger::error("could not open transitions CSV; results will not be saved");
 	}
@@ -794,6 +823,47 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message)
 					logger::warn(
 						"revision {} lacks GetVRUpscalingApplyBlockReasons and "
 						"IsVRUpscalingProfileApplyAllowed; block detection will be blind",
+						g_revisionAcquired);
+				}
+
+				// The ladder is hardcoded and CS cannot be asked for it, so a CS
+				// that moved underneath us is checked for by build number. This
+				// detects "CS changed", not "the scales changed" - the second is
+				// not answerable through this API - and it is deliberately loud
+				// because the failure it guards is silent: wrong pixel fractions
+				// rank every preset wrongly without looking wrong anywhere.
+				const auto build = g_CSInterface->getBuildNumber();
+				if (g_config.verifiedCsBuild > 0 &&
+					build != static_cast<unsigned int>(g_config.verifiedCsBuild)) {
+					logger::error(
+						"CS build {} is not the build the preset ladder was verified against "
+						"({}). Presets.h hardcodes each quality mode's resolution scale and "
+						"this API cannot report them, so every pixel fraction may now be "
+						"wrong.",
+						build, g_config.verifiedCsBuild);
+					if (g_config.requireVerifiedCsBuild) {
+						logger::error(
+							"refusing to apply preset changes. Re-verify the scales in CS's "
+							"Upscaling.h against Presets.h, then set VerifiedCsBuild={} in the "
+							"ini. Set RequireVerifiedCsBuild=0 to override.",
+							build);
+						g_config.applyGovernor = false;
+					} else {
+						logger::warn("RequireVerifiedCsBuild=0: continuing on an unverified "
+									 "ladder. Captures from this session are suspect.");
+					}
+				}
+
+				// The GPU timer is the whole basis of the headroom tier. Without
+				// it the controller still runs, on censored frametime (E-1), and
+				// climbs become blind probes - a real degradation that used to be
+				// reported at warn level among ordinary startup chatter.
+				if (g_revisionAcquired < 4) {
+					logger::error(
+						"revision {} has no GPU timing. The controller falls back to the "
+						"frametime tier, which is censored at the compositor cap, so climbs "
+						"become blind probes and no headroom number is trustworthy. Install "
+						"the forked Community Shaders build if you want the headroom tier.",
 						g_revisionAcquired);
 				}
 				g_gpuTiming = GpuTimingAvailable(g_CSInterface, g_revisionAcquired);

@@ -45,6 +45,12 @@ bool Reporter::OpenFrames()
 	if (!_frames) {
 		return false;
 	}
+	// Above the header, so the file stays one self-describing artifact rather
+	// than a CSV plus a sidecar that gets separated from it. ParseTrace skips
+	// these.
+	for (const auto& line : _provenance) {
+		_frames << "# " << line << "\n";
+	}
 	// wall_ms is Unix epoch milliseconds, UTC. It exists so this file can be
 	// joined against another tool's log - specifically OpenXR-Toolkit's
 	// stats CSV, whose rows are local wall-clock with a UTC offset. Elapsed

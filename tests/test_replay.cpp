@@ -104,6 +104,31 @@ TEST_CASE("parses a capture by header name, not by column position", "[replay]")
 	CHECK(trace[0].wallMs == 1786000001500ull);
 }
 
+TEST_CASE("provenance lines above the header are skipped", "[replay]")
+{
+	// Captures now record what produced them - CS build, API revision, and the
+	// preset ladder that was assumed, since the ladder is hardcoded and the CS
+	// API cannot report it. A parser that took the first line as the header
+	// would read "# cs_build=9" as a column name, find none of the columns it
+	// wanted, and return an empty trace: a silent wrong answer, not an error.
+	const std::string csv =
+		"# cs_build=9\n"
+		"# cs_api_revision=4\n"
+		"# preset_scales=UltraPerformance:0.333333,NativeAA:1.000000\n"
+		"wall_ms,time_s,frame_ms,preset_public,state,gpu_us,gpu_frame\n"
+		"1786000000000,1.0,13.9,3,Dwelling,9000,1\n"
+		"# a comment in the body is skipped too\n"
+		"1786000000014,1.014,13.9,3,Dwelling,9100,2\n";
+
+	std::istringstream stream(csv);
+	const auto trace = ParseTrace(stream);
+
+	REQUIRE(trace.size() == 2);
+	CHECK(trace[0].gpuUs == 9000);
+	CHECK(trace[1].gpuUs == 9100);
+	CHECK(trace[0].presetPublicValue == 3);
+}
+
 TEST_CASE("a truncated capture still parses", "[replay]")
 {
 	// Captures get truncated by crashes, which is exactly when you want to read
