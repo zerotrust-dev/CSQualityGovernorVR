@@ -791,6 +791,65 @@ confident wrong reading for the third time in this project.
 Not addressed here: `margin_down` stays at 0.0. The band width is the live
 question (Q-11), and it is being answered by a sweep rather than by argument.
 
+### D-20 (PROPOSED, not implemented) — A climb that was just reversed is not re-tried at the same headroom
+
+**Challenges:** nothing previously decided. It adds a missing piece rather than
+replacing one. D-9 gave the *frametime* tier a backoff after a failed probe, on
+the grounds that a blind climb which did not hold should not be attempted again
+straight away. The headroom tier never got the equivalent, because its climbs are
+informed rather than blind — and E-33 shows an informed climb can fail just as
+repeatably.
+
+**The evidence: E-33.** Three climbs to UltraQuality inside 85 seconds, on
+headroom of 2.60, 2.66 and 2.62 ms, each reversed after 15.2 s, 9.2 s and
+29.4 s. Six preset changes, six flashes, and the controller ended where it
+started. Nothing in it was wrong on its own terms: each climb was justified by
+the headroom at the time, and each descent by a real rise in scene cost. What is
+missing is any memory that this rung, in this scene, at about this much headroom,
+has just been shown not to hold.
+
+**Not a time-based lockout.** The obvious form — "don't re-try for N seconds" —
+picks an arbitrary N and gets it wrong in both directions: too short and it
+changes nothing, too long and it refuses a climb that has genuinely become
+affordable. The observed reversals span 9 to 29 seconds, so no single N is even
+descriptive of this one session.
+
+**The proposal, in the spirit of D-18: remember the number, not the clock.**
+
+On a climb to rung X, record the headroom it was taken on. If the controller
+descends below X within `climbReversalWindowSeconds`, store that headroom as the
+level at which X is known to fail. A later climb to X then requires
+
+    headroom >= failedHeadroom[X] + climbRetryMarginMs
+
+so the rung unlocks itself exactly when the scene has actually improved, rather
+than when a timer expires. A `climbFailForgetSeconds` bound, mirroring D-9's
+`T_reset`, drops the memory once it is old enough to be about somewhere else.
+
+Proposed: `climbReversalWindowSeconds` 30 (covers all three observed reversals),
+`climbRetryMarginMs` 0.5, `climbFailForgetSeconds` 120 (as `probeResetSeconds`).
+
+**Expected effect, stated in advance.** On E-33's session the second and third
+climbs would have been refused — their headroom, 2.66 and 2.62 ms, does not clear
+2.60 + 0.5. That is **four fewer preset changes** out of eight, with no quality
+given up that actually held, and no additional time over budget. It should cost a
+small amount of pixel fraction on captures where a re-try would have succeeded.
+
+**This one is checkable in replay, unlike D-19.** The mechanism is decision
+logic, not transient measurement, so the replay's blindness to settle latency
+does not hide it. Both terms are visible: changes per minute and time-weighted
+pixel fraction.
+
+**Refutation condition.** If replay across both committed captures shows a
+material loss of pixel fraction — say more than 2% relative — *without* a matching
+reduction in changes, the hysteresis is costing quality rather than churn, and
+the proposal should be withdrawn rather than tuned.
+
+**Cost if wrong.** The controller becomes sticky: a scene that improves slowly
+sits one rung lower than it could until the forget timer expires. That is the
+same trade D-9 already accepted on the other tier, and it fails in the safe
+direction — fewer frames over budget, not more.
+
 ### D-19 (WITHDRAWN — refuted by E-32, code reverted) — A step is only measured once the transition has settled
 
 > **Outcome: implemented, tested against its own pre-registered condition, and
@@ -1486,6 +1545,7 @@ includes questions about somebody else's instrument.
 
 ## 8. Open Questions
 
+| E-33 | **First real live run of the actuator: the controller is correct, and it re-tries a rung that just failed.** Session 2026-08-10 09:15, governor holding the lever from 170 s to 311 s, **8 applied changes, no circuit-breaker trip**, every decision explicable from its own logged numbers. It climbed Quality → UltraQuality three times — at 170.4 s, 203.4 s, 223.7 s, on headroom of **2.60, 2.66 and 2.62 ms** — and was driven back down each time after 15.2 s, 9.2 s and 29.4 s. **The landing check was not at fault:** it predicted "landing ~12.66 ms" and the measured p95 was 12.51 ms within one second and flat at ~12.6 ms for ten seconds, accurate to about 0.05 ms. The reversals came from the scene genuinely getting dearer — 12.69 → 12.76 → 12.90 → 13.01 → 13.53 → 14.14 ms over six seconds. This also **refutes my own guess** that the descents were the controller reacting to its own transient; the post-change measurement was stable and correct. Ending state: 58 s held at Quality with p95 11.96–13.09 ms and headroom 0.80–1.93 ms, below `marginUpMs` 2.5 — a deliberate hold, not a stall. | `20260810_091513_timeline.csv` |
 | E-32 | **D-19's own refutation condition fired: excluding settle frames moved the best-sampled belief FURTHER from the truth.** Replay after implementing it, against E-31's figures. Light capture `Quality → UltraQuality`: **1.146 over 7 observations → 1.184 over 5**, against an observed 1.092 — error +5% → **+8%**, in the wrong direction. Marginal: 1.129 over 2 → 1.080 over 1, closer but now resting on a single transition. Observations were lost across the board — the marginal capture's `Performance → Balanced` stopped being measured at all and fell back to its seed. Pixels: light **0.504 → 0.499**, marginal 0.568 → 0.572; a wash, and the light capture's gap widened from 0.083 to 0.089. **The settle transient is therefore not the source of the bias.** The direction is itself informative: excluding the first second after a change *raises* the measured ratio, which is what happens when load genuinely rises after the climb — so the contamination is scene drift across the transition, or a stale `_p95BeforeChange`, not a transient in the after-half. Honest limit: 5 against 7 EMA-weighted observations cannot separate "refuted" from "underpowered", and the pre-registered rule was acted on rather than reinterpreted. | CI run on `9447744`, both captures |
 | E-31 | **The one step ratio with real evidence behind it is biased high, and the poorly-sampled ones are just noise.** Learned ratios at the end of a replay, against the same step measured from the dwell buckets: `Quality → UltraQuality` reads **1.146 believed vs 1.092 observed on 7 observations** (light) and **1.129 vs 1.034 on 2** (marginal) — pessimistic in both, and the only step that is. Every other step rests on **exactly one** observation: Perf→Bal 1.056 vs 1.114 and 1.024 vs 1.139, Bal→Qual 1.047 vs 1.087 and 1.165 vs 1.116 — scattering both directions, which is what a single transition contaminated by scene movement looks like. Averaging seven cancels the scene and leaves what is systematic. Consequence: with the gate at `budget − landingMargin` = 12.89 ms, believing 1.146 instead of 1.092 refuses every climb whose P95 lies in **11.25–11.80 ms**, about **10%** of the light session — and `Quality → UltraQuality` is exactly the step the divergence table shows under-used (20.9% of intervals against the optimum's 40.2%). | CI run on `3f226d5`, both captures |
 | E-30 | **The optimum was never reporting the value its own table had found — the trajectory was reconstructed by guesswork.** With E-29's exact DP in place the monotonicity check still failed, and wider: **0.382** at a 1.0 s dwell against **0.410** at 5.0 s. Cause, present since the first version and therefore underneath E-28's published figures too: the backpointer stored only the predecessor's *preset*, and the dwell counter was re-derived as `held == 0 ? dwell : held - 1`. That derivation is not unique — `nextHeld = min(held + 1, dwell)` means a state at `held == dwell` has two possible predecessors, `dwell - 1` and `dwell` itself, already capped. On a wrong guess the walk lands on a cell that was never written, breaks out, and leaves the whole earlier prefix at preset index 0 — the cheapest rung — so the reported figure sat below the optimum the table had actually computed, by an amount varying with the dwell. Now stores the full predecessor state; nothing is re-derived except the budget, which genuinely is unique. **Lesson: two of these three defects were in the reporting path, not the search.** A DP that computes the right answer and then misreads its own table is indistinguishable, from the outside, from one that computes the wrong answer. | CI run 31324364163, commit `adc7b70` |
@@ -1514,6 +1574,33 @@ available (E-6).
 ---
 
 ## Decision Log
+
+**2026-08-10 — First live run of the actuator (E-33). The controller is correct;
+D-20 proposed for the one thing it lacks. No code written.**
+
+Governor holding the lever for 141 seconds: 8 applied changes, no circuit-breaker
+trip, every decision explicable from its own numbers. The landing check was
+vindicated — it predicted a 12.66 ms landing and got 12.51 ms within a second,
+flat for ten seconds. The player's report of "flash, and back again" was the
+controller tracking a scene that genuinely got dearer by 1.5 ms in six seconds,
+and the session's final state — 58 s held at Quality on 0.80–1.93 ms of headroom
+against a 2.5 ms climb threshold — was a deliberate hold, not a stall.
+
+This also refutes a guess I had put to the player the day before: that those
+descents might be the controller reacting to its own transient. The post-change
+measurement was stable and accurate. It was the scene.
+
+What is missing is any memory of failure. Three climbs to the same rung in 85
+seconds, on 2.60, 2.66 and 2.62 ms of headroom, each reversed. D-9 gave the
+frametime tier a backoff after a failed blind probe; the headroom tier never got
+one, on the reasoning that its climbs are informed. E-33 shows an informed climb
+can fail just as repeatably.
+
+D-20 proposes remembering the headroom a rung failed at rather than starting a
+timer, so it unlocks when the scene actually improves. Written up first, with its
+expected effect and refutation condition, per this document's procedure — and
+noting that unlike D-19 this one *is* visible in replay, because it is decision
+logic rather than transient measurement.
 
 **2026-08-09 (later still) — D-19 withdrawn and reverted; its refutation
 condition fired (E-32).**
