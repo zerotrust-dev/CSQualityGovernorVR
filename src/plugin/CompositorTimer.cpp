@@ -69,9 +69,38 @@ std::atomic_bool g_deviceReady{ false };
 // holding one eye but not the other would be worse than holding neither.
 std::atomic_uint32_t g_holdFrames{ 0 };
 std::atomic_uint64_t g_withheld{ 0 };
+std::atomic_uint64_t g_replayed{ 0 };
 // Bounds the damage from a caller asking for something absurd. Half a second of
 // held frames is already far past the point where a hitch beats an artefact.
 constexpr std::uint32_t kMaxHoldFrames = 36;
+
+// The device and context, kept from the first submit so the frame copy below
+// has something to copy with.
+Microsoft::WRL::ComPtr<ID3D11Device> g_device;
+Microsoft::WRL::ComPtr<ID3D11DeviceContext> g_context;
+
+// D-23 revised: the last good frame, per eye, to hand back during the hold.
+//
+// Skipping the submit entirely was the first attempt, on the assumption that a
+// runtime with nothing to show reprojects what it showed last. OpenComposite
+// does not - it presents black, so the gridded panel became a black one. So we
+// keep a copy and submit that instead: the runtime sees a frame every time and
+// reprojects it to the current head pose, which is the frozen image we wanted.
+//
+// One copy per preset change, not per frame. Copying speculatively every frame
+// against the chance of needing one would be ~7 GB/s here; we know exactly when
+// a change is coming because we are the ones causing it.
+struct HeldEye
+{
+	Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+	D3D11_TEXTURE2D_DESC desc{};
+	bool valid = false;
+};
+HeldEye g_held[2];
+// Set when a hold is armed; cleared once each eye has been captured. The frame
+// captured is the one right after the change is requested, which the
+// measurements show is still a valid old-preset frame (E-40).
+std::atomic_bool g_captureNext{ false };
 
 void EnsureDeviceFromTexture(const Texture_t* a_texture)
 {
@@ -96,9 +125,68 @@ void EnsureDeviceFromTexture(const Texture_t* a_texture)
 		return;
 	}
 
+	g_device = device;
+	g_context = context;
 	g_timer.Initialize(device.Get(), context.Get());
 	g_deviceReady.store(true, std::memory_order_release);
 	logger::info("[CompositorTimer] timing device acquired from the submitted texture");
+}
+
+// Copies one eye's submitted frame into our own texture, so it can be handed
+// back for the next few frames.
+//
+// Returns false on anything unexpected rather than trying to recover: the
+// caller falls back to withholding the frame, which is the previous behaviour
+// and merely looks worse. Nothing here is worth risking the render thread for.
+bool CaptureEye(std::size_t a_index, const Texture_t* a_texture)
+{
+	if (a_index >= 2 || a_texture == nullptr || a_texture->handle == nullptr || !g_device ||
+		!g_context) {
+		return false;
+	}
+	// eType 0 is TextureType_DirectX, i.e. an ID3D11Texture2D. Anything else is
+	// not ours to copy.
+	if (a_texture->eType != 0) {
+		return false;
+	}
+
+	auto* source = static_cast<ID3D11Texture2D*>(a_texture->handle);
+	D3D11_TEXTURE2D_DESC sourceDesc{};
+	source->GetDesc(&sourceDesc);
+
+	auto& held = g_held[a_index];
+	const bool matches = held.texture && held.desc.Width == sourceDesc.Width &&
+	                     held.desc.Height == sourceDesc.Height &&
+	                     held.desc.Format == sourceDesc.Format &&
+	                     held.desc.MipLevels == sourceDesc.MipLevels &&
+	                     held.desc.ArraySize == sourceDesc.ArraySize &&
+	                     held.desc.SampleDesc.Count == sourceDesc.SampleDesc.Count;
+
+	if (!matches) {
+		// CopyResource demands identical dimensions, format, mips, array size
+		// and sample count, so those are taken from the source unchanged. The
+		// rest is ours to choose: no CPU access, no shared handles, and bind
+		// flags the compositor can read.
+		D3D11_TEXTURE2D_DESC desc = sourceDesc;
+		desc.Usage = D3D11_USAGE_DEFAULT;
+		desc.CPUAccessFlags = 0;
+		desc.MiscFlags = 0;
+		desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+
+		held.texture.Reset();
+		held.valid = false;
+		if (FAILED(g_device->CreateTexture2D(&desc, nullptr, held.texture.GetAddressOf()))) {
+			logger::warn("[CompositorTimer] could not create the hold texture for eye {} "
+						 "({}x{}); falling back to withholding the frame",
+				a_index, sourceDesc.Width, sourceDesc.Height);
+			return false;
+		}
+		held.desc = desc;
+	}
+
+	g_context->CopyResource(held.texture.Get(), source);
+	held.valid = true;
+	return true;
 }
 
 EVRCompositorError WaitGetPosesThunk(void* a_self, void* a_renderPoses,
@@ -150,14 +238,32 @@ EVRCompositorError SubmitThunk(void* a_self, EVREye a_eye, const Texture_t* a_te
 		g_timer.OnCompositorSubmit();
 	}
 
-	// D-23: withhold the frame during a relatch.
-	//
-	// Returning without calling through leaves the runtime holding its previous
-	// frame, which it reprojects to the current head pose. That is a brief
-	// hitch instead of a presented render-target reallocation. Success is
-	// reported because from the game's side nothing went wrong: we chose not to
-	// show a frame that was not worth showing.
+	// eEye is 0 for left, 1 for right on every IVRCompositor version.
+	const std::size_t eye = a_eye == 0 ? 0u : 1u;
+
+	// Capture the frame the change is about to invalidate. This one is still a
+	// valid old-preset frame (E-40: the relatch does not begin for another two
+	// or three frames), and it passes through normally as well.
+	if (g_captureNext.load(std::memory_order_acquire) &&
+		g_deviceReady.load(std::memory_order_acquire)) {
+		CaptureEye(eye, a_texture);
+		if (g_held[0].valid && g_held[1].valid) {
+			g_captureNext.store(false, std::memory_order_release);
+		}
+	}
+
+	// D-23: during the relatch, hand back the copy instead of the frame being
+	// rendered into targets that are being reallocated underneath it.
 	if (g_holdFrames.load(std::memory_order_acquire) > 0) {
+		if (g_held[eye].valid) {
+			Texture_t substitute = *a_texture;
+			substitute.handle = g_held[eye].texture.Get();
+			g_replayed.fetch_add(1, std::memory_order_relaxed);
+			return g_originalSubmit(a_self, a_eye, &substitute, a_bounds, a_flags);
+		}
+		// No copy to give. Withholding shows black on OpenComposite, which is
+		// worse than the artefact was - but it is the only remaining option,
+		// and it should not happen: the capture runs before the first hold.
 		g_withheld.fetch_add(1, std::memory_order_relaxed);
 		return 0;  // VRCompositorError_None
 	}
@@ -319,8 +425,12 @@ std::uint64_t FramesOpenedBeforeSync() noexcept
 void HoldFrames(std::uint32_t a_frames) noexcept
 {
 	if (!g_active.load(std::memory_order_acquire)) {
-		return;  // nothing hooked, nothing to withhold
+		return;  // nothing hooked, nothing to hold
 	}
+	// Capture first, hold second. The next frame submitted is still a valid
+	// old-preset one, so it is both the frame we show during the relatch and a
+	// frame the player sees normally.
+	g_captureNext.store(true, std::memory_order_release);
 	g_holdFrames.store(a_frames < kMaxHoldFrames ? a_frames : kMaxHoldFrames,
 		std::memory_order_release);
 }
@@ -328,6 +438,11 @@ void HoldFrames(std::uint32_t a_frames) noexcept
 std::uint64_t FramesWithheld() noexcept
 {
 	return g_withheld.load(std::memory_order_relaxed);
+}
+
+std::uint64_t FramesReplayed() noexcept
+{
+	return g_replayed.load(std::memory_order_relaxed);
 }
 
 }

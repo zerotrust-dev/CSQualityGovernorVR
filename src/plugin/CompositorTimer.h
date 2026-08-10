@@ -68,6 +68,11 @@ void HoldFrames(std::uint32_t a_frames) noexcept;
 // is visible rather than assumed.
 [[nodiscard]] std::uint64_t FramesWithheld() noexcept;
 
+// Submits that handed back the held copy instead of the frame being rendered.
+// This is the path that should be taken during a relatch; FramesWithheld is the
+// fallback when there was no copy, and shows black.
+[[nodiscard]] std::uint64_t FramesReplayed() noexcept;
+
 }
 
 }

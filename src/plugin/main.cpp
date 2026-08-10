@@ -553,6 +553,18 @@ void FinishIfDone()
 			ratio * 100.0);
 	}
 
+	// D-23's cost, reported rather than assumed. `replayed` is the working path
+	// - the held copy handed back during a relatch. `withheld` means there was
+	// no copy to give and the frame was dropped instead, which OpenComposite
+	// shows as black; a non-zero count there is a defect worth chasing.
+	if (const auto replayed = CompositorTimer::FramesReplayed(),
+		withheld = CompositorTimer::FramesWithheld();
+		replayed > 0 || withheld > 0) {
+		logger::info("transition hold: {} submit(s) replayed from the held frame, {} withheld "
+					 "with no copy available",
+			replayed, withheld);
+	}
+
 	if (g_reporter) {
 		g_reporter->Finish(g_cycler->Records(), g_config.cycler.frameBudgetMs);
 		logger::info("results written to {}", g_reporter->Directory().string());
