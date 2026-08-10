@@ -160,7 +160,8 @@ void EnsureDeviceFromTexture(const Texture_t* a_texture)
 // Returns false on anything unexpected rather than trying to recover: the
 // caller falls back to withholding the frame, which is the previous behaviour
 // and merely looks worse. Nothing here is worth risking the render thread for.
-bool CaptureEye(std::size_t a_index, const Texture_t* a_texture, const VRTextureBounds_t* a_bounds)
+bool CaptureEye(std::size_t a_index, const Texture_t* a_texture, const VRTextureBounds_t* a_bounds,
+	EVRSubmitFlags a_flags)
 {
 	if (a_index >= 2 || a_texture == nullptr || a_texture->handle == nullptr || !g_device ||
 		!g_context) {
@@ -211,9 +212,13 @@ bool CaptureEye(std::size_t a_index, const Texture_t* a_texture, const VRTexture
 		// Logged once per size change, so the next diagnosis starts from facts
 		// rather than from what the texture was assumed to be.
 		logger::info("[CompositorTimer] hold texture eye {}: {}x{} fmt {} array {} samples {} "
-					 "misc 0x{:X} bind 0x{:X}",
+					 "misc 0x{:X} bind 0x{:X} | submit flags 0x{:X} colourspace {} bounds "
+					 "[{:.3f},{:.3f}]-[{:.3f},{:.3f}]",
 			a_index, desc.Width, desc.Height, static_cast<int>(desc.Format), desc.ArraySize,
-			desc.SampleDesc.Count, desc.MiscFlags, desc.BindFlags);
+			desc.SampleDesc.Count, desc.MiscFlags, desc.BindFlags, a_flags,
+			a_texture->eColorSpace, a_bounds ? a_bounds->uMin : 0.0f,
+			a_bounds ? a_bounds->vMin : 0.0f, a_bounds ? a_bounds->uMax : 1.0f,
+			a_bounds ? a_bounds->vMax : 1.0f);
 	}
 
 	g_context->CopyResource(held.texture.Get(), source);
@@ -287,7 +292,7 @@ EVRCompositorError SubmitThunk(void* a_self, EVREye a_eye, const Texture_t* a_te
 	// or three frames), and it passes through normally as well.
 	if (g_captureNext.load(std::memory_order_acquire) &&
 		g_deviceReady.load(std::memory_order_acquire) && !g_capturedThisArm[eye]) {
-		g_capturedThisArm[eye] = CaptureEye(eye, a_texture, a_bounds);
+		g_capturedThisArm[eye] = CaptureEye(eye, a_texture, a_bounds, a_flags);
 		if (g_capturedThisArm[0] && g_capturedThisArm[1]) {
 			g_captureNext.store(false, std::memory_order_release);
 		}
@@ -300,6 +305,30 @@ EVRCompositorError SubmitThunk(void* a_self, EVREye a_eye, const Texture_t* a_te
 	// wrong geometry entirely, and submitting a per-eye texture with the bounds
 	// meant for a double-wide one shows a black half.
 	if (g_holdFrames.load(std::memory_order_acquire) > 0) {
+		// Submit flags decide what the texture pointer actually points AT.
+		//
+		// OpenVR extends the struct in place: Submit_TextureWithPose (0x8) adds
+		// a tracking matrix after the base fields, Submit_TextureWithDepth
+		// (0x10) adds depth information, and both together add both. Handing
+		// back a bare Texture_t when the caller passed an extended one means the
+		// consumer reads fields that are not in our object.
+		//
+		// Rather than guess at those layouts, anything but a plain submit falls
+		// through untouched. That is no worse than having no hold at all, and
+		// the log below says whether this is the path being taken.
+		constexpr int kExtendedSubmitBits = 0x8 | 0x10;
+		if ((a_flags & kExtendedSubmitBits) != 0) {
+			static bool reported = false;
+			if (!reported) {
+				reported = true;
+				logger::warn("[CompositorTimer] submit flags 0x{:X} carry an extended texture "
+							 "struct; the frame hold is skipped for these and the relatch will "
+							 "be visible",
+					a_flags);
+			}
+			return g_originalSubmit(a_self, a_eye, a_texture, a_bounds, a_flags);
+		}
+
 		if (g_capturedThisArm[eye] && g_held[eye].valid) {
 			auto& held = g_held[eye];
 			// Everything from the capture, nothing from the current frame. The
