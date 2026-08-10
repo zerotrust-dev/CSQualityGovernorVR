@@ -121,6 +121,58 @@ folder, distinguishable only by timestamp. Copy and label captures before
 installing the next RC. Phase 0's provenance lines make this recoverable rather
 than merely careful.
 
+## Record: RC2 → RC3 (2026-08-10)
+
+The first time through the routine. Kept in full because the next RC is diffed
+against this, and because most of what cost time was not the governor.
+
+### What CS did
+
+| | RC2 | RC3 |
+|---|---|---|
+| Community Shaders | Particle Lights fork `PL3.15`, build 9 | **CSX `csx3.18-VR`, build 11** — same Nexus 166950, fork renamed to "Community Shaders Expanded" |
+| Preset ladder | 0.85 / 1÷1.3 / 1÷1.5 / 1÷1.7 / 0.5 / 1÷3 / 1.0 | **identical**, same internal indices |
+| GPU timing in CS | none (ours came from the fork) | **still none** |
+| API revision | 4 (ours: GPU timing) | 4 (**theirs**: `GetVRUpscalingTransitionProfileDecision`) |
+| Shaders | compiled on first run | **precompiled for all presets** |
+
+Details and quotations in **E-35**; the revision-4 collision that crashed the
+game is **E-34**.
+
+### What it cost us, and what to do next time
+
+- **The ladder surviving was the big one.** Had `GetQualityModeResolutionScale`
+  moved, every number in this project would have needed retaking. Check it
+  first, every time — it is two minutes and it gates everything else.
+- **"Revision 4" is not a version.** Two forks reached revision 4 independently
+  with different vtables. Never infer a capability from a revision or a build
+  number that is not an exact, checked match (E-34).
+- **Read the source, not the notes.** The release notes did not mention the
+  preflight API built for controllers like ours. The header did.
+- **Hold foveation fixed while measuring.** It changes cost per pixel without
+  changing pixel count, so a session with it moving cannot be fitted.
+
+### Install-side traps (not CS's fault, and all recurring)
+
+These cost more time than the port itself, and every one will recur:
+
+- **Root Builder leftovers break Wabbajack.** A stale `openvr_api.dll` from a
+  May 3 session that never cleared meant RC3 could not source the pristine game
+  file. Fix: Steam → Verify integrity. Exactly one file failed, which also
+  proved the other non-vanilla root files are additions rather than overwrites.
+- **The downloads folder shares state, not just files.** Its `.meta` files carry
+  `installed` / `removed` flags across every instance, so an archive hidden in
+  one MO2 instance is hidden in all of them.
+- **NTFS tunneling lies about dates.** Overwrite a file, or delete and recreate
+  it within ~15 s, and Windows restores the original creation time — so MO2
+  showed a fresh build as weeks old. Verify by hash, never by date.
+- **CS writes settings back into the mod that provides them**, not to Overwrite.
+  In-game changes land in the preset mod's `SettingsUser.json` and persist
+  silently; restore by replacing that file with the shipped copy, not by any
+  in-game reset (which resets to CS's defaults, not MGO's preset).
+- **Captures are not per-profile.** `Documents/My Games/Skyrim VR/SKSE/…` is
+  shared by every instance. Archive and label before installing the next RC.
+
 ## Phase 2 — definition of done for final MGO 4.0
 
 Stated as measurements so it is not a judgement call:
