@@ -791,6 +791,65 @@ confident wrong reading for the third time in this project.
 Not addressed here: `margin_down` stays at 0.0. The band width is the live
 question (Q-11), and it is being answered by a sweep rather than by argument.
 
+### D-21 — Measure GPU time from our own plugin; keep the fork only as the upstream patch
+
+**Challenges:** D-11's choice of *where* to bracket. It does **not** challenge
+D-11a — the upstream case stands unchanged, and upstreaming remains the end
+state. What changes is the interim.
+
+**What D-11 decided, and why.** Three places can bracket correctly: an OpenXR
+API layer, hooking from the plugin, or Community Shaders itself. It chose CS,
+and rejected the plugin with one sentence: *"no extra install, but the hook
+points are guesswork without local test capability."* That was correct when
+written. It is no longer true, and the phrasing hid a distinction that matters.
+
+**Why the objection has lapsed.**
+
+- The hook points are no longer guesswork. They are `IVRCompositor` **vfunc 2**
+  (`WaitGetPoses`) and **vfunc 5** (`Submit`) — the two the fork already
+  detours, empirically validated across E-18 to E-22.
+- They are not "Skyrim's renderer" either. `IVRCompositor` is OpenVR's
+  **published vtable ABI**, versioned and stable, and the fork already hooks it
+  successfully *through OpenComposite's* `openvr_api.dll` — which is this
+  stack's actual implementation. The thing D-11 called risky is the one part of
+  the stack with a documented contract.
+
+**Two costs D-11 did not price, both now realised.**
+
+1. **The measurements describe a configuration nobody plays.** Running our fork
+   means running a CS the modlist does not ship. Every cost model, step ratio
+   and score is then taken against a build the player would never have. D-11
+   priced the fork as "a rebase before the PR" and warned the patch "should not
+   be left to age for months"; five weeks on, CS has moved three versions, been
+   renamed to CSX, and reworked the render-scale path twice.
+2. **The version handshake is structurally unsafe.** E-34: two forks both
+   answer "revision 4" with different vtables, because build numbers are not
+   namespaced. That crashed the game at startup. As long as we ship a private
+   fork, every RC is another chance for the same class of collision.
+
+**The decision.** Move the timer into the plugin. `FrameGpuTimer` is already
+standalone — `<atomic>`, `<cstdint>`, `<d3d11.h>` and a logger — so this is a
+relocation of proven code, not a rewrite. The device and immediate context come
+from the texture handed to `Submit`, which is the device that rendered the
+frame by construction and needs no renderer-internals lookup.
+
+**Acceptance criterion, stated before the code, as D-13 did.** The plugin-side
+bracket must reproduce the fork's agreement with the reference: a residual
+against OpenXR Toolkit's `appGPU` of about **−0.2 to −0.3 ms, flat across load
+buckets**, on a matched-wall-clock join of several hundred seconds. Anything
+load-dependent means the bracket has moved, and it is not a substitute.
+
+**The known risk, named in advance.** The fork opens the bracket at *the first
+draw after* `WaitGetPoses` returns, using a signal only available inside CS's
+render path. From the plugin we open at `WaitGetPoses` **return** instead. If
+the application does not begin drawing promptly, GPU idle falls inside the
+bracket — which is exactly the error E-22 removed (+1.18 ms → −0.30 ms). The
+criterion above is what detects it. If it fails, the fork remains the fallback
+and this decision is withdrawn rather than tuned.
+
+**What stays.** The fork continues to exist as the vehicle for the upstream
+patch (D-11a). It is no longer what Rik runs.
+
 ### D-20 (PROPOSED, not implemented) — A climb that was just reversed is not re-tried at the same headroom
 
 **Challenges:** nothing previously decided. It adds a missing piece rather than

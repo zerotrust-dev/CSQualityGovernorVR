@@ -77,6 +77,15 @@ struct PluginConfig
 	// Only ever set this to a build of OUR fork.
 	int gpuTimingCsBuild = 9;
 
+	// D-21: measure GPU time from our own compositor hooks rather than from a
+	// forked Community Shaders, so timing works against whatever build the
+	// modlist ships.
+	//
+	// Off only as an escape hatch. With it off, and without the fork installed,
+	// the controller runs on the censored frametime tier (E-1) where four
+	// presets read the same 13.9 ms and every climb is a blind probe.
+	bool useOwnGpuTimer = true;
+
 	// Circuit breaker: disable the governor for the session if it applies more
 	// changes than this in any rolling minute.
 	//

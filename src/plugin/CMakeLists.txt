@@ -25,8 +25,18 @@ target_sources(
         ApiProbe.h
         Reporter.cpp
         Reporter.h
+        CompositorTimer.cpp
+        CompositorTimer.h
+        FrameGpuTimer.cpp
+        FrameGpuTimer.h
         PCH.h
 )
+
+# D-21: the GPU timer measures from here now, so the plugin needs D3D11 itself.
+# d3d11 is part of the Windows SDK, so this adds no package dependency - which
+# is the point: nothing here has to be kept in step with whatever Community
+# Shaders build the modlist ships.
+target_link_libraries(CSQualityGovernorVR PRIVATE d3d11)
 
 target_include_directories(CSQualityGovernorVR PRIVATE
     ${CMAKE_SOURCE_DIR}/src

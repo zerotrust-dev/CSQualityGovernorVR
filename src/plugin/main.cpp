@@ -1,4 +1,5 @@
 #include "ApiProbe.h"
+#include "CompositorTimer.h"
 #include "Config.h"
 #include "Reporter.h"
 #include "core/CyclerCore.h"
@@ -40,6 +41,13 @@ std::string TimeStamp()
 	std::strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &tm);
 	return buf;
 }
+
+// Which source supplies GPU time, kept apart because they fail differently.
+// Our own hooks are installed once and read 0 until the first submit hands us
+// a device; the CS path is a vtable call that crashes outright on a build that
+// does not have it (E-34), so it must never be reached by falling through.
+bool g_ownGpuTimer = false;
+bool g_csGpuTimer = false;
 
 // ---------------------------------------------------------------------------
 // Real CS API, behind the same interface the tests fake.
@@ -93,17 +101,38 @@ public:
 		return g_CSInterface && g_CSInterface->IsVRUpscalingProfileApplyAllowed();
 	}
 
-	// Revision 4, forked provider only. Guarded by the caller through
-	// GpuTimingAvailable(); see the note on that function for why calling this
-	// unguarded is not a graceful failure.
+	// D-21: our own timer first, the fork's API only as a fallback.
+	//
+	// Ours works against whatever Community Shaders the modlist ships, so it is
+	// preferred whenever it is running - that is the whole point of moving the
+	// brackets here. The CS path stays for the fork, which remains the vehicle
+	// for the upstream patch.
+	//
+	// The CS calls are revision-4-only and guarded by GpuTimingAvailable(); see
+	// the note on that function for why calling them unguarded is not a graceful
+	// failure but a crash (E-34).
 	std::uint64_t GpuTimeUs() const
 	{
-		return g_CSInterface ? g_CSInterface->GetLastFrameGpuTimeUs() : 0;
+		if (g_ownGpuTimer) {
+			// 0 until the first submit supplies a device, which the caller
+			// already treats as "no measurement" rather than "the GPU was idle".
+			return CompositorTimer::LastFrameGpuTimeUs();
+		}
+		if (g_csGpuTimer && g_CSInterface) {
+			return g_CSInterface->GetLastFrameGpuTimeUs();
+		}
+		return 0;
 	}
 
 	std::uint64_t GpuFrameIndex() const
 	{
-		return g_CSInterface ? g_CSInterface->GetLastFrameGpuTimeFrameIndex() : 0;
+		if (g_ownGpuTimer) {
+			return CompositorTimer::LastFrameGpuTimeFrameIndex();
+		}
+		if (g_csGpuTimer && g_CSInterface) {
+			return g_CSInterface->GetLastFrameGpuTimeFrameIndex();
+		}
+		return 0;
 	}
 };
 
@@ -724,7 +753,11 @@ void BeginSession()
 		provenance.push_back(std::format("cs_api_revision={}", g_revisionAcquired));
 		provenance.push_back(std::format("verified_cs_build={}", g_config.verifiedCsBuild));
 		provenance.push_back(std::format("gpu_timing_cs_build={}", g_config.gpuTimingCsBuild));
-		provenance.push_back(std::format("gpu_timing={}", g_gpuTiming ? "yes" : "no"));
+		// Which timer, not just whether. A capture taken through our own
+		// brackets and one taken through the fork's are different instruments,
+		// and D-21 exists precisely because they may not agree yet.
+		provenance.push_back(std::format("gpu_timing={}",
+			g_ownGpuTimer ? "own" : (g_csGpuTimer ? "cs-fork" : "none")));
 		provenance.push_back(std::format("frame_budget_ms={:.3f}", g_config.cycler.frameBudgetMs));
 		provenance.push_back(std::format("apply_governor={}", g_config.applyGovernor ? 1 : 0));
 		std::string ladder;
@@ -867,8 +900,18 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message)
 						"the forked Community Shaders build if you want the headroom tier.",
 						g_revisionAcquired);
 				}
-				g_gpuTiming = GpuTimingAvailable(g_CSInterface, g_revisionAcquired,
-					static_cast<unsigned int>(g_config.gpuTimingCsBuild));
+				// D-21: try our own brackets first. They work against whatever
+				// CS the modlist ships, so the fork stops being something Rik
+				// has to run and goes back to being only the upstream patch.
+				g_ownGpuTimer = g_config.useOwnGpuTimer && CompositorTimer::Install();
+				if (g_ownGpuTimer) {
+					logger::info("GPU timing from our own compositor hooks (D-21); works "
+								 "against whatever Community Shaders the modlist ships");
+				}
+				g_csGpuTimer = !g_ownGpuTimer &&
+				               GpuTimingAvailable(g_CSInterface, g_revisionAcquired,
+								   static_cast<unsigned int>(g_config.gpuTimingCsBuild));
+				g_gpuTiming = g_ownGpuTimer || g_csGpuTimer;
 				if (g_gpuTiming) {
 					logger::info("GPU timing available (revision {}, build {}): headroom will be "
 								 "measured rather than inferred",

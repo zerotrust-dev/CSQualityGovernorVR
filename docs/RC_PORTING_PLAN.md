@@ -74,6 +74,22 @@ the upstream PR alongside the timer.
 
 Repeat unchanged for each candidate.
 
+0. **Read the CS source before touching anything.** Not the release notes — the
+   source, on the branch that RC ships. Three files answer almost everything:
+   the VR API header (what the interface now offers), `Upscaling.h`'s
+   `GetQualityModeResolutionScale` (whether our hardcoded ladder still holds),
+   and anything named Adaptive / Auto / Stabilizer (whether CS has grown a
+   policy engine that makes part of the governor redundant).
+
+   This step is here because skipping it nearly cost us twice. Reading
+   `csx-3-VR` established in minutes that the ladder was unchanged, that CSX
+   3.18's revision 4 is a *different* revision 4 from ours, and — the part we
+   would have missed entirely — that CS had added
+   `GetVRUpscalingTransitionProfileDecision`, a preflight built **for external
+   controllers like ours** that supersedes hand-rolled apply plumbing. CS is
+   actively growing support for what we are doing; the cost of not looking is
+   reimplementing what they already give us, or missing it for a whole release.
+
 1. Install into a **new** MO2 instance, never over the previous one — the old RC
    is the only environment in which the previous numbers mean anything. See
    `knowledge/MGO_INSTALL_LAYOUT.md` for the shared-game-folder constraints.
