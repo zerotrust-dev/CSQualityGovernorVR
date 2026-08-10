@@ -75,7 +75,7 @@ struct ApiSnapshot
 	std::uint64_t gpuTimeUs = 0;
 	std::uint64_t gpuFrameIndex = 0;
 
-	static ApiSnapshot Capture(CSPluginAPI::ICSInterface001* a_interface, bool a_withGpuTime);
+	static ApiSnapshot Capture(CSPluginAPI::ICSInterface001* a_interface, bool a_csHasGpuTiming);
 
 	[[nodiscard]] bool operator==(const ApiSnapshot&) const = default;
 	[[nodiscard]] std::string CsvHeaderSuffix(std::string_view a_prefix) const;

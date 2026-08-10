@@ -191,14 +191,14 @@ bool GpuTimingAvailable(CSPluginAPI::ICSInterface001* a_interface,
 	       a_interface->getBuildNumber() == a_verifiedBuild;
 }
 
-ApiSnapshot ApiSnapshot::Capture(CSPluginAPI::ICSInterface001* a_interface, bool a_withGpuTime)
+ApiSnapshot ApiSnapshot::Capture(CSPluginAPI::ICSInterface001* a_interface, bool a_csHasGpuTiming)
 {
 	ApiSnapshot snap;
 	if (!a_interface) {
 		return snap;
 	}
 	try {
-		if (a_withGpuTime) {
+		if (a_csHasGpuTiming) {
 			snap.gpuTimeUs = a_interface->GetLastFrameGpuTimeUs();
 			snap.gpuFrameIndex = a_interface->GetLastFrameGpuTimeFrameIndex();
 		}

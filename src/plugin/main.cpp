@@ -687,7 +687,12 @@ void OnFrame(double a_now, double a_frameTimeMs)
 	// anyone having watched for it.
 	if (g_reporter && a_now - g_lastApiSample >= 0.5) {
 		g_lastApiSample = a_now;
-		const auto snap = ApiSnapshot::Capture(g_CSInterface, g_gpuTiming);
+		// g_csGpuTimer, NOT g_gpuTiming. The snapshot reads GPU time straight
+		// off the CS interface, so the question here is "does THAT interface
+		// have the methods", not "do we have timing from somewhere". Passing
+		// the latter crashed the game the instant our own timer went live and
+		// flipped it true against a CS build with no such method (E-37).
+		const auto snap = ApiSnapshot::Capture(g_CSInterface, g_csGpuTimer);
 		// Cheap side effect worth having: this snapshot already read the preset,
 		// so monitor mode gets it without calling the API every frame.
 		g_monitorPreset = snap.upscalePreset;
