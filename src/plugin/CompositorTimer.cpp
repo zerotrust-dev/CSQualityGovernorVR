@@ -41,8 +41,12 @@ using WaitGetPoses_t = EVRCompositorError (*)(void* self, void* renderPoses,
 using Submit_t = EVRCompositorError (*)(void* self, EVREye eye, const Texture_t* texture,
 	const VRTextureBounds_t* bounds, EVRSubmitFlags flags);
 
-// Vtable slots, the same two the fork detours: WaitGetPoses is 2 and Submit
-// is 5 on every IVRCompositor version Skyrim VR can be running.
+// Vtable slots, the same two the fork detours.
+//
+// These are indices into IVRCompositor_022's vtable specifically - the version
+// SkyrimVR.exe uses and the one the fork validated against. They are NOT
+// stable across interface versions, which is the whole reason FindCompositor
+// asks for 022 by name instead of taking whatever answers first.
 constexpr std::size_t kWaitGetPosesSlot = 2;
 constexpr std::size_t kSubmitSlot = 5;
 
@@ -169,24 +173,28 @@ void* FindCompositor()
 		return nullptr;
 	}
 
-	// Newest first. The interface version is part of the string, and asking for
-	// one the runtime does not implement returns null rather than failing, so a
-	// walk is both safe and the only way to work against OpenComposite as well
-	// as SteamVR without pinning to whichever they implement this month.
+	// EXACTLY the version the game itself uses. Not a walk, and never a newer
+	// one.
 	//
-	// The range covers what OpenComposite actually exports, checked against the
-	// shipped binary: it answers 009 through 024, so stopping at 022 would have
-	// been a guess that happened to include the right ones.
-	static constexpr const char* kVersions[]{
-		"IVRCompositor_028", "IVRCompositor_027", "IVRCompositor_026", "IVRCompositor_025",
-		"IVRCompositor_024", "IVRCompositor_023", "IVRCompositor_022", "IVRCompositor_021",
-		"IVRCompositor_020", "IVRCompositor_019",
-	};
+	// Asking for a different version does not fail - the runtime hands back a
+	// different wrapper object implementing that version's ABI, with its own
+	// vtable layout. Hooking that is wrong twice over: the slot indices do not
+	// mean the same thing, and the game never calls through that object anyway,
+	// so nothing would be measured even if it survived.
+	//
+	// It did not survive. Walking newest-first got IVRCompositor_024 from
+	// OpenComposite, which exports up to 024, and patching slots 2 and 5 of it
+	// crashed the game at the main menu (E-36).
+	//
+	// SkyrimVR.exe references exactly one compositor version, checked by
+	// scanning the binary: IVRCompositor_022. The fork's slot 2 and slot 5 were
+	// validated against that same interface, which is why they were right there.
+	static constexpr const char* kGameVersion = "IVRCompositor_022";
 	int lastError = 0;
-	for (const char* version : kVersions) {
+	{
 		int error = 0;
-		if (void* compositor = getInterface(version, &error); compositor != nullptr) {
-			logger::info("[CompositorTimer] compositor found: {}", version);
+		if (void* compositor = getInterface(kGameVersion, &error); compositor != nullptr) {
+			logger::info("[CompositorTimer] compositor found: {}", kGameVersion);
 			return compositor;
 		}
 		lastError = error;
