@@ -97,10 +97,20 @@ struct HeldEye
 	bool valid = false;
 };
 HeldEye g_held[2];
-// Set when a hold is armed; cleared once each eye has been captured. The frame
-// captured is the one right after the change is requested, which the
-// measurements show is still a valid old-preset frame (E-40).
+// Set when a hold is armed; cleared once BOTH eyes have been captured in this
+// window. The frame captured is the one right after the change is requested,
+// which the measurements show is still a valid old-preset frame (E-40).
 std::atomic_bool g_captureNext{ false };
+// Captured during THIS arming, per eye. Distinct from HeldEye::valid, which
+// only says a texture exists from some earlier change.
+//
+// Conflating the two is what produced the black right eye: the clear condition
+// tested `valid` for both eyes, that was already true from a previous hold, and
+// so the flag cleared after the first eye and the second kept a stale copy. The
+// submitted geometry is not constant - CS alternates between per-eye textures
+// (3494 wide here) and a double-wide atlas (6988) with bounds selecting halves -
+// so a stale copy is not merely an old picture, it is the wrong shape (E-43).
+bool g_capturedThisArm[2]{ false, false };
 
 void EnsureDeviceFromTexture(const Texture_t* a_texture)
 {
@@ -255,17 +265,21 @@ EVRCompositorError SubmitThunk(void* a_self, EVREye a_eye, const Texture_t* a_te
 	// valid old-preset frame (E-40: the relatch does not begin for another two
 	// or three frames), and it passes through normally as well.
 	if (g_captureNext.load(std::memory_order_acquire) &&
-		g_deviceReady.load(std::memory_order_acquire)) {
-		CaptureEye(eye, a_texture);
-		if (g_held[0].valid && g_held[1].valid) {
+		g_deviceReady.load(std::memory_order_acquire) && !g_capturedThisArm[eye]) {
+		g_capturedThisArm[eye] = CaptureEye(eye, a_texture);
+		if (g_capturedThisArm[0] && g_capturedThisArm[1]) {
 			g_captureNext.store(false, std::memory_order_release);
 		}
 	}
 
 	// D-23: during the relatch, hand back the copy instead of the frame being
 	// rendered into targets that are being reallocated underneath it.
+	//
+	// Only a copy taken during THIS arming will do. An older one may be the
+	// wrong geometry entirely, and submitting a per-eye texture with the bounds
+	// meant for a double-wide one shows a black half.
 	if (g_holdFrames.load(std::memory_order_acquire) > 0) {
-		if (g_held[eye].valid) {
+		if (g_capturedThisArm[eye] && g_held[eye].valid) {
 			Texture_t substitute = *a_texture;
 			substitute.handle = g_held[eye].texture.Get();
 			g_replayed.fetch_add(1, std::memory_order_relaxed);
@@ -440,6 +454,12 @@ void HoldFrames(std::uint32_t a_frames) noexcept
 	// Capture first, hold second. The next frame submitted is still a valid
 	// old-preset one, so it is both the frame we show during the relatch and a
 	// frame the player sees normally.
+	//
+	// Both eyes start uncaptured for this window. Carrying a copy over from a
+	// previous change is not a saving: the submitted geometry alternates between
+	// per-eye and double-wide, so the old copy may be the wrong shape (E-43).
+	g_capturedThisArm[0] = false;
+	g_capturedThisArm[1] = false;
 	g_captureNext.store(true, std::memory_order_release);
 	g_holdFrames.store(a_frames < kMaxHoldFrames ? a_frames : kMaxHoldFrames,
 		std::memory_order_release);
