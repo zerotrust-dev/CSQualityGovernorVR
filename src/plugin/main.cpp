@@ -617,6 +617,20 @@ void RunShadowGovernor(double a_now, double a_frameTimeMs, std::uint64_t a_gpuUs
 
 void OnFrame(double a_now, double a_frameTimeMs)
 {
+	// D-21: keep asking for the compositor until the runtime publishes one.
+	//
+	// The attempt at CS-interface time is too early - OpenComposite had not
+	// handed one out, so the first run of this measured nothing at all. There
+	// is no "VR is ready" event to wait on, and this is the only place that
+	// runs once per frame. Install() is a cheap flag check once it succeeds,
+	// and gives up after a bounded number of attempts if it never does.
+	if (g_config.useOwnGpuTimer && !g_ownGpuTimer && CompositorTimer::Install()) {
+		g_ownGpuTimer = true;
+		g_csGpuTimer = false;
+		g_gpuTiming = true;
+		logger::info("GPU timing is live: our own compositor brackets (D-21)");
+	}
+
 	if (!g_cycler) {
 		return;
 	}

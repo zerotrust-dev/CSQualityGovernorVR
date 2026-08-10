@@ -9,7 +9,6 @@
 
 #include <atomic>
 #include <cstddef>
-#include <mutex>
 
 namespace csgov::CompositorTimer {
 
@@ -51,8 +50,12 @@ FrameGpuTimer g_timer;
 WaitGetPoses_t g_originalWaitGetPoses = nullptr;
 Submit_t g_originalSubmit = nullptr;
 std::atomic_bool g_active{ false };
-std::once_flag g_installOnce;
 bool g_installResult = false;
+// Bounded so a stack that never publishes a compositor stops asking rather
+// than probing every frame for the whole session. ~30 s at 72 fps is far
+// longer than the game takes to bring VR up.
+std::atomic_uint32_t g_attempts{ 0 };
+constexpr std::uint32_t kMaxAttempts = 2200;
 // The device is taken from the first submitted texture, so initialisation
 // happens on the render thread rather than at install time.
 std::atomic_bool g_deviceReady{ false };
@@ -170,18 +173,36 @@ void* FindCompositor()
 	// one the runtime does not implement returns null rather than failing, so a
 	// walk is both safe and the only way to work against OpenComposite as well
 	// as SteamVR without pinning to whichever they implement this month.
+	//
+	// The range covers what OpenComposite actually exports, checked against the
+	// shipped binary: it answers 009 through 024, so stopping at 022 would have
+	// been a guess that happened to include the right ones.
 	static constexpr const char* kVersions[]{
 		"IVRCompositor_028", "IVRCompositor_027", "IVRCompositor_026", "IVRCompositor_025",
-		"IVRCompositor_024", "IVRCompositor_023", "IVRCompositor_022",
+		"IVRCompositor_024", "IVRCompositor_023", "IVRCompositor_022", "IVRCompositor_021",
+		"IVRCompositor_020", "IVRCompositor_019",
 	};
+	int lastError = 0;
 	for (const char* version : kVersions) {
 		int error = 0;
 		if (void* compositor = getInterface(version, &error); compositor != nullptr) {
 			logger::info("[CompositorTimer] compositor found: {}", version);
 			return compositor;
 		}
+		lastError = error;
 	}
-	logger::warn("[CompositorTimer] no known IVRCompositor version answered");
+
+	// Reported once per distinct error, because this runs every frame until it
+	// succeeds and the first attempt is expected to fail: the runtime has not
+	// handed out a compositor when the plugin loads, only once the game has
+	// initialised VR. A repeated line per frame would bury the run that works.
+	static int reported = -1;
+	if (reported != lastError) {
+		reported = lastError;
+		logger::info("[CompositorTimer] no IVRCompositor yet (last error {}); retrying as the "
+					 "game runs - VR is not initialised when the plugin loads",
+			lastError);
+	}
 	return nullptr;
 }
 
@@ -189,10 +210,24 @@ void* FindCompositor()
 
 bool Install()
 {
-	std::call_once(g_installOnce, [] {
+	// Retried rather than attempted once.
+	//
+	// The first attempt happens when the CS interface is acquired, and it
+	// fails: OpenComposite has not published a compositor that early, so the
+	// whole timer went quiet for a session and the run measured nothing. Since
+	// there is no event for "VR is up", the honest approach is to keep asking
+	// from the frame loop until it answers.
+	if (g_installResult) {
+		return true;
+	}
+	if (g_attempts.fetch_add(1, std::memory_order_relaxed) >= kMaxAttempts) {
+		return false;
+	}
+
+	{
 		void* compositor = FindCompositor();
 		if (compositor == nullptr) {
-			return;
+			return false;
 		}
 
 		g_originalWaitGetPoses = reinterpret_cast<WaitGetPoses_t>(
@@ -202,15 +237,15 @@ bool Install()
 
 		if (g_originalWaitGetPoses == nullptr || g_originalSubmit == nullptr) {
 			logger::error("[CompositorTimer] could not patch the compositor vtable");
-			return;
+			return false;
 		}
 
 		g_active.store(true, std::memory_order_release);
 		g_installResult = true;
-		logger::info("[CompositorTimer] hooked WaitGetPoses (slot {}) and Submit (slot {}); "
-					 "GPU timing no longer needs a forked Community Shaders",
-			kWaitGetPosesSlot, kSubmitSlot);
-	});
+		logger::info("[CompositorTimer] hooked WaitGetPoses (slot {}) and Submit (slot {}) after "
+					 "{} attempt(s); GPU timing no longer needs a forked Community Shaders",
+			kWaitGetPosesSlot, kSubmitSlot, g_attempts.load(std::memory_order_relaxed));
+	}
 	return g_installResult;
 }
 
