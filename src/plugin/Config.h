@@ -98,9 +98,16 @@ struct PluginConfig
 	// causes, so the runtime reprojects the last good frame instead of
 	// presenting a reallocation in progress.
 	//
-	// 6 frames is ~83 ms at 72 Hz. Too few leaves part of the artefact visible;
-	// too many is a hitch worse than the thing it hides. 0 disables it.
-	int transitionHoldFrames = 6;
+	// Measured, not guessed. A change costs a ~85 ms stall plus one frame doing
+	// 66-86 ms of GPU work, and takes 10-11 frames to return to normal.
+	// Counting from the moment we apply: frames 1-3 are still valid old-preset
+	// frames, 4-6 are the stall and the relatch, 7-10 are valid but slow. 8
+	// covers the bad ones with margin without withholding the recovery.
+	//
+	// RC2 and RC3 measure identically here - same stall, same spike, same
+	// recovery. Only the appearance differed, because PL3.15's HAM bug painted
+	// the gap white. 0 disables it.
+	int transitionHoldFrames = 8;
 
 	// Circuit breaker: disable the governor for the session if it applies more
 	// changes than this in any rolling minute.
