@@ -698,7 +698,7 @@ void BeginSession()
 	// nothing after it is worth reading - and that is a result in itself,
 	// available without waiting for a sweep to complete.
 	const auto probe = ApiProbe::Run(g_CSInterface, CSPluginAPI::CSInterfaceRevision,
-		g_revisionAcquired, static_cast<unsigned int>(g_config.verifiedCsBuild));
+		g_revisionAcquired, static_cast<unsigned int>(g_config.gpuTimingCsBuild));
 	const auto probeText = probe.Format();
 	for (auto&& line : std::views::split(probeText, '\n')) {
 		const std::string_view view{ line.begin(), line.end() };
@@ -723,6 +723,7 @@ void BeginSession()
 		provenance.push_back(std::format("cs_build={}", g_api.BuildNumber()));
 		provenance.push_back(std::format("cs_api_revision={}", g_revisionAcquired));
 		provenance.push_back(std::format("verified_cs_build={}", g_config.verifiedCsBuild));
+		provenance.push_back(std::format("gpu_timing_cs_build={}", g_config.gpuTimingCsBuild));
 		provenance.push_back(std::format("gpu_timing={}", g_gpuTiming ? "yes" : "no"));
 		provenance.push_back(std::format("frame_budget_ms={:.3f}", g_config.cycler.frameBudgetMs));
 		provenance.push_back(std::format("apply_governor={}", g_config.applyGovernor ? 1 : 0));
@@ -867,7 +868,7 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message)
 						g_revisionAcquired);
 				}
 				g_gpuTiming = GpuTimingAvailable(g_CSInterface, g_revisionAcquired,
-					static_cast<unsigned int>(g_config.verifiedCsBuild));
+					static_cast<unsigned int>(g_config.gpuTimingCsBuild));
 				if (g_gpuTiming) {
 					logger::info("GPU timing available (revision {}, build {}): headroom will be "
 								 "measured rather than inferred",

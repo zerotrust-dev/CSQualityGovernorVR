@@ -145,6 +145,7 @@ PluginConfig PluginConfig::Load(const std::filesystem::path& a_path)
 	config.verifiedCsBuild = ini.GetInt("VerifiedCsBuild", config.verifiedCsBuild);
 	config.requireVerifiedCsBuild =
 		ini.GetBool("RequireVerifiedCsBuild", config.requireVerifiedCsBuild);
+	config.gpuTimingCsBuild = ini.GetInt("GpuTimingCsBuild", config.gpuTimingCsBuild);
 	config.maxChangesPerMinute = ini.GetInt("MaxChangesPerMinute", config.maxChangesPerMinute);
 	config.targetHz = ini.GetDouble("TargetHz", config.targetHz);
 

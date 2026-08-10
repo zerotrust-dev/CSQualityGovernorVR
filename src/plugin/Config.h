@@ -65,6 +65,18 @@ struct PluginConfig
 	// pixel fractions do not look wrong, they just quietly rank everything.
 	bool requireVerifiedCsBuild = true;
 
+	// The build whose vtable actually carries our revision-4 GPU timing methods.
+	//
+	// Deliberately SEPARATE from verifiedCsBuild, because the two facts are
+	// independent and tying them to one number is a trap. CSX 3.18 reports
+	// build 11 and its resolution scales match ours exactly - so the ladder is
+	// verified and verifiedCsBuild should say 11 - but it has no timing methods
+	// at all, and calling them crashes the game (E-34). One number cannot mean
+	// both "the scales are right" and "our fork's vtable is present".
+	//
+	// Only ever set this to a build of OUR fork.
+	int gpuTimingCsBuild = 9;
+
 	// Circuit breaker: disable the governor for the session if it applies more
 	// changes than this in any rolling minute.
 	//
