@@ -37,7 +37,7 @@ struct ApiProbe
 	[[nodiscard]] std::string Format() const;
 
 	static ApiProbe Run(CSPluginAPI::ICSInterface001* a_interface, unsigned int a_requested,
-		unsigned int a_acquired);
+		unsigned int a_acquired, unsigned int a_verifiedBuild);
 };
 
 // True when the provider is one of our forked builds, i.e. when the revision-4
@@ -47,8 +47,17 @@ struct ApiProbe
 // are our own extension, so a stock Community Shaders returns an interface whose
 // vtable simply ends earlier; calling one of the new slots on it does not fail
 // cleanly, it jumps to whatever follows in memory.
+//
+// It requires the build number to MATCH the verified one, not merely to be at
+// least it. Build numbers are not namespaced across forks: CSX 3.18 reports
+// revision 4 build 11 and has no timing methods at all - its revision 4 adds
+// GetVRUpscalingTransitionProfileDecision where ours adds GetLastFrameGpuTimeUs.
+// A `>=` test passed on it and the next call jumped off the end of their vtable,
+// crashing the game at startup (E-34). Two forks can always agree on a number
+// by accident; only an exact match against a build somebody has actually
+// checked is evidence of anything.
 [[nodiscard]] bool GpuTimingAvailable(CSPluginAPI::ICSInterface001* a_interface,
-	unsigned int a_acquiredRevision);
+	unsigned int a_acquiredRevision, unsigned int a_verifiedBuild);
 
 // Snapshot of every readable piece of API state, sampled around each
 // transition so drift in anything other than the preset is visible.

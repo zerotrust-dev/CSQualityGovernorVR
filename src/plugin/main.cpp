@@ -698,7 +698,7 @@ void BeginSession()
 	// nothing after it is worth reading - and that is a result in itself,
 	// available without waiting for a sweep to complete.
 	const auto probe = ApiProbe::Run(g_CSInterface, CSPluginAPI::CSInterfaceRevision,
-		g_revisionAcquired);
+		g_revisionAcquired, static_cast<unsigned int>(g_config.verifiedCsBuild));
 	const auto probeText = probe.Format();
 	for (auto&& line : std::views::split(probeText, '\n')) {
 		const std::string_view view{ line.begin(), line.end() };
@@ -866,7 +866,8 @@ void OnMessage(SKSE::MessagingInterface::Message* a_message)
 						"the forked Community Shaders build if you want the headroom tier.",
 						g_revisionAcquired);
 				}
-				g_gpuTiming = GpuTimingAvailable(g_CSInterface, g_revisionAcquired);
+				g_gpuTiming = GpuTimingAvailable(g_CSInterface, g_revisionAcquired,
+					static_cast<unsigned int>(g_config.verifiedCsBuild));
 				if (g_gpuTiming) {
 					logger::info("GPU timing available (revision {}, build {}): headroom will be "
 								 "measured rather than inferred",

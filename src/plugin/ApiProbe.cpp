@@ -54,7 +54,7 @@ bool ApiProbe::AllOk() const
 }
 
 ApiProbe ApiProbe::Run(CSPluginAPI::ICSInterface001* a_interface, unsigned int a_requested,
-	unsigned int a_acquired)
+	unsigned int a_acquired, unsigned int a_verifiedBuild)
 {
 	ApiProbe probe;
 	probe.revisionRequested = a_requested;
@@ -119,7 +119,7 @@ ApiProbe ApiProbe::Run(CSPluginAPI::ICSInterface001* a_interface, unsigned int a
 			allowed ? "" : "not allowed right now - may simply be a loading screen" };
 	}));
 
-	if (GpuTimingAvailable(api, a_acquired)) {
+	if (GpuTimingAvailable(api, a_acquired, a_verifiedBuild)) {
 		probe.results.push_back(Probe("GetLastFrameGpuTimeUs", [&]() -> Reading {
 			const auto us = api->GetLastFrameGpuTimeUs();
 			const auto index = api->GetLastFrameGpuTimeFrameIndex();
@@ -133,10 +133,12 @@ ApiProbe ApiProbe::Run(CSPluginAPI::ICSInterface001* a_interface, unsigned int a
 		}));
 	} else {
 		probe.results.push_back({ "GetLastFrameGpuTimeUs", "<not available>", true, true,
-			std::format("provider is revision {} build {}; GPU timing needs revision {} build {} "
-						"(the forked Community Shaders). Running on the frametime tier.",
+			std::format("provider is revision {} build {}; GPU timing needs revision {} and "
+						"build EXACTLY {} (the forked Community Shaders, as set by "
+						"VerifiedCsBuild). Running on the frametime tier, which is censored at "
+						"the compositor cap, so climbs are blind probes.",
 				a_acquired, probe.buildNumber, CSPluginAPI::CSInterfaceRevision004,
-				CSPluginAPI::CSBuildNumberFrameGpuTime) });
+				a_verifiedBuild) });
 	}
 
 	probe.results.push_back(Probe("GetSSSEnabled", [&]() -> Reading {
@@ -178,11 +180,15 @@ std::string ApiProbe::Format() const
 	return out;
 }
 
-bool GpuTimingAvailable(CSPluginAPI::ICSInterface001* a_interface, unsigned int a_acquiredRevision)
+bool GpuTimingAvailable(CSPluginAPI::ICSInterface001* a_interface,
+	unsigned int a_acquiredRevision, unsigned int a_verifiedBuild)
 {
-	return a_interface != nullptr &&
+	// Exact match, and only against a build the ladder was verified against. A
+	// verified build of 0 means the check was switched off, which cannot be
+	// read as permission to make a call that crashes when it is wrong.
+	return a_interface != nullptr && a_verifiedBuild > 0 &&
 	       a_acquiredRevision >= CSPluginAPI::CSInterfaceRevision004 &&
-	       a_interface->getBuildNumber() >= CSPluginAPI::CSBuildNumberFrameGpuTime;
+	       a_interface->getBuildNumber() == a_verifiedBuild;
 }
 
 ApiSnapshot ApiSnapshot::Capture(CSPluginAPI::ICSInterface001* a_interface, bool a_withGpuTime)
