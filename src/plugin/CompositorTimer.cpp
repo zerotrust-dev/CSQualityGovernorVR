@@ -94,6 +94,18 @@ struct HeldEye
 {
 	Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
 	D3D11_TEXTURE2D_DESC desc{};
+	// Everything else the submit carried, captured with the pixels.
+	//
+	// The bounds are not a property of the eye, they are a property of the
+	// frame: in double-wide mode they select a half, in per-eye mode they cover
+	// the whole texture. Replaying our copy with the CURRENT frame's bounds
+	// pairs a pre-relatch texture with post-relatch bounds, and the relatch is
+	// exactly when the layout changes - which is what put the comic-book pattern
+	// back once a session had switched to double-wide (E-44).
+	VRTextureBounds_t bounds{};
+	bool hasBounds = false;
+	int eType = 0;
+	int eColorSpace = 0;
 	bool valid = false;
 };
 HeldEye g_held[2];
@@ -148,7 +160,7 @@ void EnsureDeviceFromTexture(const Texture_t* a_texture)
 // Returns false on anything unexpected rather than trying to recover: the
 // caller falls back to withholding the frame, which is the previous behaviour
 // and merely looks worse. Nothing here is worth risking the render thread for.
-bool CaptureEye(std::size_t a_index, const Texture_t* a_texture)
+bool CaptureEye(std::size_t a_index, const Texture_t* a_texture, const VRTextureBounds_t* a_bounds)
 {
 	if (a_index >= 2 || a_texture == nullptr || a_texture->handle == nullptr || !g_device ||
 		!g_context) {
@@ -205,6 +217,15 @@ bool CaptureEye(std::size_t a_index, const Texture_t* a_texture)
 	}
 
 	g_context->CopyResource(held.texture.Get(), source);
+
+	// A frame is not just its pixels. The bounds, texture type and colour space
+	// all arrived with this submit and all have to go back with the copy.
+	held.hasBounds = a_bounds != nullptr;
+	if (held.hasBounds) {
+		held.bounds = *a_bounds;
+	}
+	held.eType = a_texture->eType;
+	held.eColorSpace = a_texture->eColorSpace;
 	held.valid = true;
 	return true;
 }
@@ -266,7 +287,7 @@ EVRCompositorError SubmitThunk(void* a_self, EVREye a_eye, const Texture_t* a_te
 	// or three frames), and it passes through normally as well.
 	if (g_captureNext.load(std::memory_order_acquire) &&
 		g_deviceReady.load(std::memory_order_acquire) && !g_capturedThisArm[eye]) {
-		g_capturedThisArm[eye] = CaptureEye(eye, a_texture);
+		g_capturedThisArm[eye] = CaptureEye(eye, a_texture, a_bounds);
 		if (g_capturedThisArm[0] && g_capturedThisArm[1]) {
 			g_captureNext.store(false, std::memory_order_release);
 		}
@@ -280,10 +301,18 @@ EVRCompositorError SubmitThunk(void* a_self, EVREye a_eye, const Texture_t* a_te
 	// meant for a double-wide one shows a black half.
 	if (g_holdFrames.load(std::memory_order_acquire) > 0) {
 		if (g_capturedThisArm[eye] && g_held[eye].valid) {
-			Texture_t substitute = *a_texture;
-			substitute.handle = g_held[eye].texture.Get();
+			auto& held = g_held[eye];
+			// Everything from the capture, nothing from the current frame. The
+			// bounds especially: the relatch is what switches the layout between
+			// per-eye and double-wide, so the frames we are covering are exactly
+			// the ones whose bounds no longer describe our texture (E-44).
+			Texture_t substitute{};
+			substitute.handle = held.texture.Get();
+			substitute.eType = held.eType;
+			substitute.eColorSpace = held.eColorSpace;
 			g_replayed.fetch_add(1, std::memory_order_relaxed);
-			return g_originalSubmit(a_self, a_eye, &substitute, a_bounds, a_flags);
+			return g_originalSubmit(a_self, a_eye, &substitute,
+				held.hasBounds ? &held.bounds : nullptr, a_flags);
 		}
 		// No copy to give. Withholding shows black on OpenComposite, which is
 		// worse than the artefact was - but it is the only remaining option,
