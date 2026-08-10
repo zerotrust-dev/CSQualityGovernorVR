@@ -148,6 +148,7 @@ PluginConfig PluginConfig::Load(const std::filesystem::path& a_path)
 	config.gpuTimingCsBuild = ini.GetInt("GpuTimingCsBuild", config.gpuTimingCsBuild);
 	config.useOwnGpuTimer = ini.GetBool("UseOwnGpuTimer", config.useOwnGpuTimer);
 	config.transitionApiCsBuild = ini.GetInt("TransitionApiCsBuild", config.transitionApiCsBuild);
+	config.transitionHoldFrames = ini.GetInt("TransitionHoldFrames", config.transitionHoldFrames);
 	config.maxChangesPerMinute = ini.GetInt("MaxChangesPerMinute", config.maxChangesPerMinute);
 	config.targetHz = ini.GetDouble("TargetHz", config.targetHz);
 

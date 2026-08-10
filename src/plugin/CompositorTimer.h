@@ -48,6 +48,26 @@ void Uninstall();
 // does that.
 [[nodiscard]] std::uint64_t FramesOpenedBeforeSync() noexcept;
 
+// D-23: withhold the next a_frames submits, so the runtime reprojects the last
+// good frame instead of presenting a relatch in progress.
+//
+// Called immediately before a preset change. Changing the quality mode
+// reallocates every render target, and for a frame or two there is nothing
+// valid to present - the gridded panel the player sees. An application that
+// does not submit gets its previous frame reprojected to the current head pose,
+// which is what reprojection is for, so withholding turns a garbage frame into
+// a brief hitch.
+//
+// Deliberately not "re-submit the last texture": that needs a reference to a
+// texture the game recycles, or a full-resolution copy every frame on the off
+// chance - about 7 GB/s here - to insure against something that happens twice a
+// minute. The runtime already holds the previous frame.
+void HoldFrames(std::uint32_t a_frames) noexcept;
+
+// Submits withheld so far. Reported in the session summary so the cost of this
+// is visible rather than assumed.
+[[nodiscard]] std::uint64_t FramesWithheld() noexcept;
+
 }
 
 }

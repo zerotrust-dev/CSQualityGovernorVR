@@ -94,6 +94,14 @@ struct PluginConfig
 	// 0 disables the path and falls back to SetUpscalePreset.
 	int transitionApiCsBuild = 11;
 
+	// D-23: frames to withhold across the render-target relatch a preset change
+	// causes, so the runtime reprojects the last good frame instead of
+	// presenting a reallocation in progress.
+	//
+	// 6 frames is ~83 ms at 72 Hz. Too few leaves part of the artefact visible;
+	// too many is a hitch worse than the thing it hides. 0 disables it.
+	int transitionHoldFrames = 6;
+
 	// Circuit breaker: disable the governor for the session if it applies more
 	// changes than this in any rolling minute.
 	//

@@ -64,6 +64,15 @@ constexpr std::uint32_t kMaxAttempts = 2200;
 // happens on the render thread rather than at install time.
 std::atomic_bool g_deviceReady{ false };
 
+// D-23. Frames still to withhold, decremented once per frame in WaitGetPoses
+// rather than per submit, because a frame is two submits (one per eye) and
+// holding one eye but not the other would be worse than holding neither.
+std::atomic_uint32_t g_holdFrames{ 0 };
+std::atomic_uint64_t g_withheld{ 0 };
+// Bounds the damage from a caller asking for something absurd. Half a second of
+// held frames is already far past the point where a hitch beats an artefact.
+constexpr std::uint32_t kMaxHoldFrames = 36;
+
 void EnsureDeviceFromTexture(const Texture_t* a_texture)
 {
 	if (g_deviceReady.load(std::memory_order_acquire) || a_texture == nullptr ||
@@ -119,6 +128,12 @@ EVRCompositorError WaitGetPosesThunk(void* a_self, void* a_renderPoses,
 		g_timer.ArmFrame();
 		g_timer.OnDrawSubmitted();
 	}
+
+	// D-23: one frame of the hold consumed. Decremented here, not in Submit,
+	// so a frame is held for both eyes or neither.
+	if (auto remaining = g_holdFrames.load(std::memory_order_acquire); remaining > 0) {
+		g_holdFrames.store(remaining - 1, std::memory_order_release);
+	}
 	return result;
 }
 
@@ -134,6 +149,19 @@ EVRCompositorError SubmitThunk(void* a_self, EVREye a_eye, const Texture_t* a_te
 	if (g_deviceReady.load(std::memory_order_acquire)) {
 		g_timer.OnCompositorSubmit();
 	}
+
+	// D-23: withhold the frame during a relatch.
+	//
+	// Returning without calling through leaves the runtime holding its previous
+	// frame, which it reprojects to the current head pose. That is a brief
+	// hitch instead of a presented render-target reallocation. Success is
+	// reported because from the game's side nothing went wrong: we chose not to
+	// show a frame that was not worth showing.
+	if (g_holdFrames.load(std::memory_order_acquire) > 0) {
+		g_withheld.fetch_add(1, std::memory_order_relaxed);
+		return 0;  // VRCompositorError_None
+	}
+
 	return g_originalSubmit(a_self, a_eye, a_texture, a_bounds, a_flags);
 }
 
@@ -286,6 +314,20 @@ std::uint64_t LastFrameGpuTimeFrameIndex() noexcept
 std::uint64_t FramesOpenedBeforeSync() noexcept
 {
 	return g_timer.GetFramesOpenedBeforeSync();
+}
+
+void HoldFrames(std::uint32_t a_frames) noexcept
+{
+	if (!g_active.load(std::memory_order_acquire)) {
+		return;  // nothing hooked, nothing to withhold
+	}
+	g_holdFrames.store(a_frames < kMaxHoldFrames ? a_frames : kMaxHoldFrames,
+		std::memory_order_release);
+}
+
+std::uint64_t FramesWithheld() noexcept
+{
+	return g_withheld.load(std::memory_order_relaxed);
 }
 
 }

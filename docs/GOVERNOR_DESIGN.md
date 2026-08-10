@@ -791,7 +791,60 @@ confident wrong reading for the third time in this project.
 Not addressed here: `margin_down` stays at 0.0. The band width is the live
 question (Q-11), and it is being answered by a sweep rather than by argument.
 
-### D-22 (PROPOSED, not implemented) — Apply presets through CS's transition-profile API, not `SetUpscalePreset`
+### D-23 — Hide the relatch by withholding the frame, not by fading
+
+**The problem, stated properly.** Changing the quality mode reallocates every
+render target: `PerfMode.cpp` sets `restartRequired` whenever `qualityMode`
+differs from the boot latch. For a frame or two there is nothing valid to
+present, and the headset shows whatever is in that memory — the gridded panel
+the player reports, which he identified as resembling CS's own interface.
+
+**Three things ruled out first, each by evidence rather than argument.**
+
+- *The fade.* CS's own constants say it does not drive `Game.FadeOutGame`; the
+  caller must, and the intended shape is 1 s out, up to 6 s of black, 1 s in.
+  For a controller changing quality every 20-30 s that is far worse than the
+  artefact. Implemented and measured in D-22: the artefact survived it.
+- *The menu path.* There isn't one. `PerfMode` makes **no distinction** between
+  a change from CS's UI and one through the plugin API. The menu looks smooth
+  because its panel covers the view while the world is paused — the same glitch
+  happens, on a static image, behind an overlay.
+- *Going back to the white flash.* That flash was a bug in
+  `ClearHMDMaskCS.hlsl`, which now correctly clears the hidden-area mask to
+  black. It happened to paint over the relatch gap. It is upstream, it is fixed,
+  and it is not ours to reintroduce. **The artefact is not new — it is what the
+  bug was covering.**
+
+**The decision.** We already hook `IVRCompositor::Submit` for D-21. For a short
+window after we apply a preset change, **do not call through**. An application
+that does not submit gets its previous frame reprojected to the current head
+pose by the runtime — that is what reprojection exists for. The result reads as
+a brief hitch rather than a garbage panel.
+
+**Why withholding beats re-submitting the old texture.** The obvious version is
+to keep the last good frame and hand it back. That needs a reference to a
+texture the game recycles, or a full-resolution copy every frame against the
+chance we might need it — about 7 GB/s at this resolution, to insure against an
+event that happens twice a minute. Withholding achieves the same visual result
+because the runtime already holds the previous frame. Nothing is copied, nothing
+is kept alive, and the code is a counter.
+
+**Expected effect, stated in advance.** The gridded panel is replaced by a
+2-6 frame hold, which at 72 Hz is 28-83 ms. Dropped-frame counts in the capture
+will rise around each change, and that is the mechanism working rather than
+failing — the frames were already unusable. Pixel fraction and the governor's
+decisions are untouched; this changes only what reaches the headset.
+
+**Refutation condition.** If the artefact still appears, the bad frame is not
+the one we withheld — either the window is wrong or the garbage arrives through
+a path that is not `Submit` — and the hold length is the first thing to check
+before the idea is abandoned. If the hold is visible as a stutter worse than the
+artefact, it is the wrong trade and gets withdrawn.
+
+**Cost if wrong.** A few withheld frames per change. The runtime is designed for
+exactly this, and it is bounded by a counter with an ini switch to disable it.
+
+### D-22 (PARTLY REFUTED — the artefact survived; preflight retained) — Apply presets through CS's transition-profile API, not `SetUpscalePreset`
 
 **Challenges:** nothing decided. It replaces plumbing written when the only
 available path was `SetUpscalePreset()`, which was true of PL3.15 and is no

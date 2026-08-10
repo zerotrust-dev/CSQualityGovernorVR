@@ -43,6 +43,11 @@ std::string TimeStamp()
 	return buf;
 }
 
+// Loaded once at startup. Declared here rather than beside the other globals
+// because LiveCSApi reads it, and a namespace-scope name used in an inline
+// member function body must already be declared.
+PluginConfig g_config;
+
 // Which source supplies GPU time, kept apart because they fail differently.
 // Our own hooks are installed once and read 0 until the first submit hands us
 // a device; the CS path is a vtable call that crashes outright on a build that
@@ -104,6 +109,20 @@ public:
 		}
 		const auto preset = static_cast<CSPluginAPI::UpscalePreset>(info->publicValue);
 
+		// D-23: withhold frames across the relatch this change is about to
+		// cause. Armed BEFORE the change, because the first invalid frame can
+		// be the very next one.
+		//
+		// Only for a change that actually happens: the preflight below returns
+		// early on kNoChange and kBlocked, and holding frames for a change that
+		// was never made would be a hitch bought for nothing.
+		const auto hold = [](bool a_changing) {
+			if (a_changing && g_config.transitionHoldFrames > 0) {
+				CompositorTimer::HoldFrames(
+					static_cast<std::uint32_t>(g_config.transitionHoldFrames));
+			}
+		};
+
 		if (auto* csx = TransitionApi()) {
 			const auto method = csx->GetUpscaleMethod();
 			const bool renderScale = csx->GetRenderAtUpscaleResEnabled();
@@ -122,6 +141,7 @@ public:
 				// difference between deferring and being refused.
 				return;
 			case TransitionDecision::Apply:
+				hold(true);
 				csx->SetVRUpscalingTransitionProfileForMethod(
 					method, renderScale, preset, profile);
 				return;
@@ -129,6 +149,7 @@ public:
 			return;
 		}
 
+		hold(true);
 		g_CSInterface->SetUpscalePreset(preset);
 	}
 
@@ -341,7 +362,6 @@ private:
 
 // ---------------------------------------------------------------------------
 
-PluginConfig g_config;
 LiveCSApi g_api;
 std::unique_ptr<CyclerCore> g_cycler;
 std::unique_ptr<GovernorCore> g_governor;
