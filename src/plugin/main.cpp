@@ -678,14 +678,26 @@ void RunShadowGovernor(double a_now, double a_frameTimeMs, std::uint64_t a_gpuUs
 				outcome = "deferred";
 			} else {
 				g_api.SetPreset(decision->target);
+
+				// D-23b defers the apply by a frame or two while a known-good
+				// frame is captured, so the preset legitimately has not changed
+				// yet. Reading it back here and calling that a mismatch is how
+				// four real changes were recorded as failures - and a governor
+				// that believes its changes are being refused stops making
+				// them, which is why it went quiet late in the session.
+				//
+				// A deferred apply is verified when it lands, not before.
+				const bool waitingOnCapture = g_pendingPreset.has_value();
 				const auto readback = g_api.GetPreset();
-				const bool matched = readback == decision->target;
+				const bool matched = waitingOnCapture || readback == decision->target;
 				logger::info("[governor] {} {} -> {}{} | {} | p95gpu={:.2f}ms headroom={:.2f}ms",
 					GovernorActionName(decision->action), PresetName(a_preset),
 					PresetName(decision->target),
-					matched ? "" : " (READBACK MISMATCH)", decision->reason,
-					decision->p95GpuMs, decision->headroomMs);
-				outcome = matched ? "applied" : "readback-mismatch";
+					waitingOnCapture ? " (applying next frame)" :
+									   (matched ? "" : " (READBACK MISMATCH)"),
+					decision->reason, decision->p95GpuMs, decision->headroomMs);
+				outcome = waitingOnCapture ? "applied-deferred" :
+											 (matched ? "applied" : "readback-mismatch");
 				g_bufferedTarget.reset();
 				// Only now: a refused apply must not start a cooldown against a
 				// change that never happened.
