@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <string>
 
 namespace csgov::CompositorTimer {
 
@@ -462,6 +463,38 @@ bool Install()
 		if (g_originalWaitGetPoses == nullptr || g_originalSubmit == nullptr) {
 			logger::error("[CompositorTimer] could not patch the compositor vtable");
 			return false;
+		}
+
+		// Which module owns the function we now call as "the original"?
+		//
+		// This decides whether our replayed frame reaches the runtime or is fed
+		// back into Community Shaders. CS hooks this same slot and, once its
+		// render-scale path latches, substitutes its own upscaled texture. If we
+		// patched the vtable last we sit at the head - us, then CS, then the
+		// compositor - and a frame we hand back during a relatch goes straight
+		// into the upscaler that is mid-relatch. If CS patched last, we are
+		// downstream and our frame goes to the runtime untouched.
+		//
+		// The symptom fits the first case: clean until CS latches, broken after.
+		// Rather than infer it, ask the loader who owns the pointer.
+		if (HMODULE owner = nullptr;
+			GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+					GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+				reinterpret_cast<LPCWSTR>(g_originalSubmit), &owner) &&
+			owner != nullptr) {
+			wchar_t path[MAX_PATH]{};
+			GetModuleFileNameW(owner, path, MAX_PATH);
+			std::wstring wide(path);
+			std::string name(wide.begin(), wide.end());
+			if (const auto slash = name.find_last_of("\\/"); slash != std::string::npos) {
+				name = name.substr(slash + 1);
+			}
+			logger::info("[CompositorTimer] the Submit we chain to belongs to {} - we are {} it",
+				name,
+				name.find("CommunityShaders") != std::string::npos ? "IN FRONT OF (bad: our "
+																	 "replayed frames re-enter "
+																	 "the upscaler)"
+																   : "BEHIND (good)");
 		}
 
 		g_active.store(true, std::memory_order_release);
