@@ -883,8 +883,17 @@ void BeginSession()
 		// Which timer, not just whether. A capture taken through our own
 		// brackets and one taken through the fork's are different instruments,
 		// and D-21 exists precisely because they may not agree yet.
+		//
+		// "own-pending" because this is written before the frame loop has
+		// installed the compositor hooks - the runtime does not publish a
+		// compositor that early. A capture that ran the whole session on our own
+		// timer was recording "none" here, which is a header lying about its own
+		// file.
 		provenance.push_back(std::format("gpu_timing={}",
-			g_ownGpuTimer ? "own" : (g_csGpuTimer ? "cs-fork" : "none")));
+			g_ownGpuTimer	   ? "own" :
+				g_csGpuTimer   ? "cs-fork" :
+				g_config.useOwnGpuTimer ? "own-pending" :
+										  "none"));
 		provenance.push_back(std::format("frame_budget_ms={:.3f}", g_config.cycler.frameBudgetMs));
 		provenance.push_back(std::format("apply_governor={}", g_config.applyGovernor ? 1 : 0));
 		std::string ladder;

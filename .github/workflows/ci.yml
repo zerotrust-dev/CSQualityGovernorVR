@@ -55,6 +55,11 @@ jobs:
           ./build/csgov_replay tests/data/session-20260808.csv --csv sweep-light.csv | tee replay-report.txt
           echo >> replay-report.txt
           ./build/csgov_replay tests/data/session-20260808-marginal.csv --csv sweep-marginal.csv | tee -a replay-report.txt
+          echo >> replay-report.txt
+          # RC3 is a different mod list with a much steeper cost curve - k 2.75
+          # against RC2's ~1.1 - so its thresholds have to come from its own
+          # data. The RC2 captures stay as regression fixtures for the tool.
+          ./build/csgov_replay tests/data/rc3-2026-08-11/20260811_204703_frames.csv --csv sweep-rc3.csv | tee -a replay-report.txt
 
       - name: Upload replay report
         if: runner.os == 'Linux'
@@ -65,6 +70,7 @@ jobs:
             replay-report.txt
             sweep-light.csv
             sweep-marginal.csv
+            sweep-rc3.csv
           retention-days: 30
 
   # Bootstrap pattern copied from the sibling HeadDirectedTurning repo, which
