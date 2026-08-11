@@ -124,6 +124,13 @@ std::atomic_bool g_captureNext{ false };
 // (3494 wide here) and a double-wide atlas (6988) with bounds selecting halves -
 // so a stale copy is not merely an old picture, it is the wrong shape (E-43).
 bool g_capturedThisArm[2]{ false, false };
+// Set when a hold starts using the capture, cleared when a new one is armed.
+//
+// Without this, CaptureReady() stays true after a hold ends, so the NEXT change
+// skips arming and replays the previous change's frame - stale by one preset
+// and possibly by one layout. That is why the first transition of a session
+// looked right and every one after it did not (E-46).
+bool g_captureConsumed = false;
 
 void EnsureDeviceFromTexture(const Texture_t* a_texture)
 {
@@ -567,12 +574,14 @@ void ArmCapture() noexcept
 	// per-eye and double-wide, so the old copy may be the wrong shape (E-43).
 	g_capturedThisArm[0] = false;
 	g_capturedThisArm[1] = false;
+	g_captureConsumed = false;
 	g_captureNext.store(true, std::memory_order_release);
 }
 
 bool CaptureReady() noexcept
 {
-	return g_capturedThisArm[0] && g_capturedThisArm[1] && g_held[0].valid && g_held[1].valid;
+	return !g_captureConsumed && g_capturedThisArm[0] && g_capturedThisArm[1] && g_held[0].valid &&
+	       g_held[1].valid;
 }
 
 void HoldFrames(std::uint32_t a_frames) noexcept
@@ -583,6 +592,9 @@ void HoldFrames(std::uint32_t a_frames) noexcept
 	// Does NOT arm a capture. The caller is expected to have captured already
 	// and confirmed it with CaptureReady, because a copy taken after the change
 	// was requested may be the relatch itself.
+	// The capture belongs to THIS hold. A later change must arm a fresh one
+	// rather than replay a frame from the preset before last (E-46).
+	g_captureConsumed = true;
 	g_holdFrames.store(a_frames < kMaxHoldFrames ? a_frames : kMaxHoldFrames,
 		std::memory_order_release);
 }
