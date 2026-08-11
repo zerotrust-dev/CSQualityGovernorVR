@@ -168,9 +168,18 @@ bool CaptureEye(std::size_t a_index, const Texture_t* a_texture, const VRTexture
 		!g_context) {
 		return false;
 	}
-	// eType 0 is TextureType_DirectX, i.e. an ID3D11Texture2D. Anything else is
-	// not ours to copy.
+	// eType 0 is TextureType_DirectX, i.e. an ID3D11Texture2D. Anything else -
+	// a DX12 or Vulkan handle - is not ours to copy, and CS's source carries a
+	// DX12 swapchain path that could one day present one. Reported once so the
+	// silence is explained rather than mysterious.
 	if (a_texture->eType != 0) {
+		static bool reported = false;
+		if (!reported) {
+			reported = true;
+			logger::warn("[CompositorTimer] submitted texture type {} is not D3D11; the frame "
+						 "hold is disabled for this session and the relatch will be visible",
+				a_texture->eType);
+		}
 		return false;
 	}
 
@@ -344,11 +353,22 @@ EVRCompositorError SubmitThunk(void* a_self, EVREye a_eye, const Texture_t* a_te
 			return g_originalSubmit(a_self, a_eye, &substitute,
 				held.hasBounds ? &held.bounds : nullptr, a_flags);
 		}
-		// No copy to give. Withholding shows black on OpenComposite, which is
-		// worse than the artefact was - but it is the only remaining option,
-		// and it should not happen: the capture runs before the first hold.
+		// No copy to give: pass the real frame through.
+		//
+		// Fail open, never closed. Withholding shows black on OpenComposite,
+		// which is worse than the artefact we are hiding - so every path that
+		// cannot substitute confidently must hand the original on instead. The
+		// worst case then is the relatch being visible, which is where we
+		// started, rather than a black or corrupted view.
+		//
+		// This matters beyond today's bug: the submit path is CS's to change.
+		// It already switched from per-eye to double-wide mid-session, and
+		// their source carries an upscale-method switch, foveated upscaling,
+		// frame generation and a DX12 swapchain. Any of those may present a
+		// frame we cannot copy, and the correct response to all of them is the
+		// same - get out of the way.
 		g_withheld.fetch_add(1, std::memory_order_relaxed);
-		return 0;  // VRCompositorError_None
+		return g_originalSubmit(a_self, a_eye, a_texture, a_bounds, a_flags);
 	}
 
 	return g_originalSubmit(a_self, a_eye, a_texture, a_bounds, a_flags);

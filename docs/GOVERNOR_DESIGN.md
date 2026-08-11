@@ -791,6 +791,36 @@ confident wrong reading for the third time in this project.
 Not addressed here: `margin_down` stays at 0.0. The band width is the live
 question (Q-11), and it is being answered by a sweep rather than by argument.
 
+### D-23a — The frame hold fails open, never closed
+
+**Why this is a decision and not an implementation detail.** The hold substitutes
+a frame we captured for one the game rendered. That is only safe while every
+property of the submit is one we recorded, and **the submit path belongs to
+Community Shaders, not to us.** It has already changed underneath us once inside
+a single session — per-eye textures becoming a combined double-wide atlas the
+moment the render-scale path latched (E-43) — and their source carries an
+upscale-method switch, foveated upscaling, frame generation and a DX12 swapchain,
+any of which could present something we cannot copy.
+
+So the rule: **when anything about a submit is not exactly what was captured,
+hand the original through untouched.** Not withheld, not substituted, not
+guessed at.
+
+The worst outcome is then the relatch being visible — which is where we started,
+and which is merely ugly. Withholding shows black (E-41) and substituting the
+wrong thing shows corruption (E-42, E-43, E-44), both of which are worse than
+the problem.
+
+Concretely: an unknown texture type, an extended submit struct, a failed capture
+or a missing copy all pass through. Each is reported once, so a hold that
+quietly stops working explains itself in the log instead of looking like it
+never ran.
+
+**This is what keeps a future CS option from turning the governor back into a
+comic-book generator.** It cannot keep the hold working across every change they
+make; nothing outside their process can. It can guarantee that a change we do
+not understand costs us the mitigation and nothing else.
+
 ### D-23 — Hide the relatch by withholding the frame, not by fading
 
 **The problem, stated properly.** Changing the quality mode reallocates every
