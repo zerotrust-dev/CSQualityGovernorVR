@@ -105,6 +105,21 @@ struct GovernorConfig
 	// Bounds the damage from a bad k to a known number of rungs.
 	int maxClimbRungs = 3;
 
+	// --- D-20: do not re-try a rung that just failed at this headroom ---
+	//
+	// A climb reversed within this long is treated as having failed rather than
+	// as the scene changing. E-33 saw three climbs to the same rung inside 85 s,
+	// reversed after 15, 9 and 29 s; E-48 saw nine of fourteen changes follow
+	// that shape, each costing about 1.5 s over budget in the headset.
+	double climbReversalWindowSeconds = 30.0;
+	// A failed rung is unlocked by HEADROOM, not by a clock. Remembering the
+	// headroom it failed at and requiring more before trying again means it
+	// re-opens when the scene has actually improved - and the observed
+	// reversals spanned 9 to 29 s, so no single timeout was even descriptive.
+	double climbRetryMarginMs = 0.5;
+	// Beyond this the memory is about somewhere else. Mirrors D-9's T_reset.
+	double climbFailForgetSeconds = 120.0;
+
 	// Decision window and cadence.
 	double judgeWindowSeconds = 2.0;
 	double evalIntervalSeconds = 0.5;
@@ -176,6 +191,10 @@ public:
 	// transitions and one taken from a single transition are different claims,
 	// and the number cannot show which it is.
 	[[nodiscard]] std::size_t StepObservations(Preset a_from) const noexcept;
+	// D-20: 0 when this rung may be climbed to, otherwise the headroom it now
+	// requires because a climb to it recently failed.
+	[[nodiscard]] double ClimbBlockedByFailure(Preset a_target, double a_headroomMs,
+		double a_nowSeconds) const noexcept;
 
 private:
 	struct Entry
@@ -190,6 +209,8 @@ private:
 	// a single upward rung, since a multi-rung move measures a product rather
 	// than a step.
 	void LearnStepRatio(Preset a_from, double a_p95Before, Preset a_to, double a_p95After);
+	// D-20: records whether the climb in flight held or was reversed.
+	void NoteClimbOutcome(Preset a_newPreset, double a_nowSeconds);
 	[[nodiscard]] GovernorDecision Evaluate(double a_nowSeconds, Preset a_current);
 	[[nodiscard]] GovernorDecision EvaluateHeadroom(double a_nowSeconds, Preset a_current,
 		GovernorDecision a_base);
@@ -231,6 +252,21 @@ private:
 	// a belief cannot be argued with until you know how much evidence is behind
 	// it.
 	std::array<std::size_t, kPresets.size()> _stepObservations{};
+
+	// D-20: what each rung is known to have failed at.
+	//
+	// Indexed by the rung being climbed TO. Holds the headroom the failed climb
+	// was taken on, so a later attempt needs materially more before it is
+	// allowed - the rung re-opens when the scene improves rather than when a
+	// timer expires.
+	std::array<double, kPresets.size()> _climbFailedHeadroom{};
+	std::array<double, kPresets.size()> _climbFailedAt{};
+	// The climb in flight, so a descent below it can be recognised as that
+	// climb having failed rather than as an unrelated decision.
+	Preset _lastClimbTarget = Preset::NativeAA;
+	double _lastClimbAt = -1.0e9;
+	double _lastClimbHeadroom = 0.0;
+	bool _climbInFlight = false;
 
 	// The two-point measurement a change gives us for free: the P95 from just
 	// before it, held until the window has refilled at the new preset.

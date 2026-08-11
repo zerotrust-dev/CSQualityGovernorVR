@@ -409,6 +409,80 @@ TEST_CASE("a step's cost is measured, not assumed", "[governor]")
 	CHECK(h.core.StepRatio(Preset::Balanced) == Approx(1.30).margin(0.02));
 }
 
+TEST_CASE("a rung that just failed is not re-tried at the same headroom", "[governor]")
+{
+	// D-20. E-48: nine of fourteen live changes were a climb followed by a
+	// descend at the first opportunity, each costing about 1.5 s over budget.
+	// The landing check cannot prevent that - it asks whether a climb SHOULD
+	// fit, using a cost model whose residual the replay itself warns about.
+	// This asks whether one already DID NOT, which is the only evidence that
+	// does not depend on the model being right.
+	auto config = TestConfig();
+	config.maxClimbRungs = 1;
+	config.climbRetryMarginMs = 0.5;
+
+	Harness h{ config, Preset::Balanced };
+
+	// Cheap enough to climb, but the rung above costs more than it predicts -
+	// so the climb lands over budget and is reversed.
+	const auto cost = [](Preset a_preset) {
+		return a_preset == Preset::Balanced ? 9.0 : 15.0;  // over the 13.889 budget
+	};
+	h.RunLadder(30.0, kBudget, cost);
+
+	REQUIRE(h.changes.size() >= 2);
+	CHECK(h.changes[0].action == GovernorAction::Climb);
+	CHECK(h.changes[1].action == GovernorAction::Descend);
+
+	// The point of the test: having failed, it must not keep trying. Without
+	// D-20 the same climb re-fires every cooldown for the whole run.
+	std::size_t climbs = 0;
+	for (const auto& change : h.changes) {
+		if (change.action == GovernorAction::Climb) {
+			++climbs;
+		}
+	}
+	CHECK(climbs <= 2);
+
+	// And the reason says why, because a decision nobody can explain is one
+	// nobody can trust (D-12).
+	bool explained = false;
+	for (const auto& decision : h.decisions) {
+		if (decision.reason.find("failed at") != std::string::npos) {
+			explained = true;
+		}
+	}
+	CHECK(explained);
+}
+
+TEST_CASE("a failed rung re-opens when the scene genuinely improves", "[governor]")
+{
+	// The other half, and the reason this is keyed on headroom rather than a
+	// timer: a lockout that only expires with the clock would refuse a climb
+	// that has become affordable, and the observed reversals spanned 9 to 29 s
+	// so no single timeout was even descriptive.
+	auto config = TestConfig();
+	config.maxClimbRungs = 1;
+	config.climbRetryMarginMs = 0.5;
+
+	Harness h{ config, Preset::Balanced };
+	const auto expensive = [](Preset a_preset) {
+		return a_preset == Preset::Balanced ? 9.0 : 15.0;
+	};
+	h.RunLadder(20.0, kBudget, expensive);
+	const auto afterFailure = h.changes.size();
+	REQUIRE(afterFailure >= 2);
+
+	// The scene gets much cheaper: the rung now fits with room to spare.
+	const auto cheap = [](Preset a_preset) {
+		return a_preset == Preset::Balanced ? 5.0 : 7.0;
+	};
+	h.RunLadder(20.0, kBudget, cheap);
+
+	CHECK(h.changes.size() > afterFailure);
+	CHECK(h.changes.back().action == GovernorAction::Climb);
+}
+
 TEST_CASE("only adjacent steps teach a step's cost", "[governor]")
 {
 	// A multi-rung move measures the product of several steps. Attributing it

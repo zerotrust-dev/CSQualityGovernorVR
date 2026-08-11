@@ -156,6 +156,41 @@ std::size_t GovernorCore::StepObservations(Preset a_from) const noexcept
 	return _stepObservations[RatioIndex(a_from)];
 }
 
+// D-20. Returns the headroom this rung now requires, or 0 when it is free.
+double GovernorCore::ClimbBlockedByFailure(Preset a_target, double a_headroomMs,
+	double a_nowSeconds) const noexcept
+{
+	const auto index = RatioIndex(a_target);
+	if (_climbFailedAt[index] <= 0.0) {
+		return 0.0;  // never failed
+	}
+	// Old enough to be about a different place. D-9's T_reset, same reasoning:
+	// without this, one bad patch of scenery makes the controller timid for the
+	// rest of the session.
+	if (a_nowSeconds - _climbFailedAt[index] > _config.climbFailForgetSeconds) {
+		return 0.0;
+	}
+	const double required = _climbFailedHeadroom[index] + _config.climbRetryMarginMs;
+	return a_headroomMs >= required ? 0.0 : required;
+}
+
+void GovernorCore::NoteClimbOutcome(Preset a_newPreset, double a_nowSeconds)
+{
+	if (!_climbInFlight) {
+		return;
+	}
+	// A move to a preset at or below where the climb started means the climb
+	// did not hold. Anything else - another climb, or a descent that stays
+	// above it - is not evidence about this rung.
+	if (PresetScale(a_newPreset) < PresetScale(_lastClimbTarget) &&
+		a_nowSeconds - _lastClimbAt <= _config.climbReversalWindowSeconds) {
+		const auto index = RatioIndex(_lastClimbTarget);
+		_climbFailedHeadroom[index] = _lastClimbHeadroom;
+		_climbFailedAt[index] = a_nowSeconds;
+	}
+	_climbInFlight = false;
+}
+
 void GovernorCore::LearnStepRatio(Preset a_from, double a_p95Before, Preset a_to,
 	double a_p95After)
 {
@@ -207,7 +242,16 @@ void GovernorCore::Reset(double a_nowSeconds)
 
 void GovernorCore::NotifyApplied(Preset a_preset, double a_nowSeconds)
 {
-	(void)a_preset;
+	// D-20: judge the climb in flight before recording this change as the new
+	// baseline. A move back below where a climb landed, soon after it landed,
+	// is that climb having failed - the one piece of evidence about a rung that
+	// does not depend on the cost model being right.
+	NoteClimbOutcome(a_preset, a_nowSeconds);
+	if (_pendingAction == GovernorAction::Climb) {
+		_climbInFlight = true;
+		_lastClimbAt = a_nowSeconds;
+	}
+
 	_lastChangeAt = a_nowSeconds;
 
 	// D-17: hold the pre-change observation so the next settled evaluation can
@@ -418,8 +462,28 @@ GovernorDecision GovernorCore::EvaluateHeadroom(double, Preset a_current,
 				return decision;
 			}
 
+			// D-20: this rung failed here before, and nothing has improved.
+			//
+			// The landing check asks whether a climb SHOULD fit, using a cost
+			// model whose residual the replay itself warns about. This asks
+			// whether one already DID NOT - which is the only evidence that
+			// does not depend on the model being right. Keyed on headroom
+			// rather than a timer so the rung re-opens when the scene actually
+			// gets cheaper.
+			if (const auto blocked = ClimbBlockedByFailure(target, decision.headroomMs,
+					a_nowSeconds);
+				blocked > 0.0) {
+				decision.reason = Say(
+					"hold: %.2f ms spare but %s failed at %.2f ms spare and needs %.2f",
+					decision.headroomMs, PresetName(target).data(),
+					_climbFailedHeadroom[RatioIndex(target)], blocked);
+				return decision;
+			}
+
 			decision.action = GovernorAction::Climb;
 			decision.target = target;
+			_lastClimbTarget = target;
+			_lastClimbHeadroom = decision.headroomMs;
 			decision.reason = Say(
 				"climb: p95 GPU %.2f ms leaves %.2f ms spare, %d rung(s) fit, landing ~%.2f ms "
 				"(step costs %.3fx)",
