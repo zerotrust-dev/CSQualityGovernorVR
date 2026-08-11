@@ -64,6 +64,21 @@ void Uninstall();
 // minute. The runtime already holds the previous frame.
 void HoldFrames(std::uint32_t a_frames) noexcept;
 
+// Capture a frame now, without holding anything yet.
+//
+// Split from HoldFrames because the order matters and we had it wrong: arming
+// and applying together meant the copy was taken from the frame AFTER the
+// change was requested, and if the relatch begins immediately that frame is
+// already invalid. Replaying it then reproduces the artefact faithfully for the
+// whole hold, which is a steady panel rather than a flash - what the player
+// actually reported.
+//
+// So: ArmCapture, wait for CaptureReady, and only then apply and hold.
+void ArmCapture() noexcept;
+
+// True once both eyes have been captured for the current arming.
+[[nodiscard]] bool CaptureReady() noexcept;
+
 // Submits withheld so far. Reported in the session summary so the cost of this
 // is visible rather than assumed.
 [[nodiscard]] std::uint64_t FramesWithheld() noexcept;

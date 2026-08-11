@@ -63,6 +63,10 @@ bool g_csGpuTimer = false;
 CSXInterface001* g_csxTransition = nullptr;
 CSXInterface001* TransitionApi() noexcept { return g_csxTransition; }
 
+// D-23b: a preset change waiting for a known-good frame to be captured before
+// it is applied. Empty the rest of the time.
+std::optional<Preset> g_pendingPreset;
+
 // ---------------------------------------------------------------------------
 // Real CS API, behind the same interface the tests fake.
 //
@@ -109,13 +113,23 @@ public:
 		}
 		const auto preset = static_cast<CSPluginAPI::UpscalePreset>(info->publicValue);
 
-		// D-23: withhold frames across the relatch this change is about to
-		// cause. Armed BEFORE the change, because the first invalid frame can
-		// be the very next one.
+		// D-23b: get a KNOWN-GOOD frame in hand before asking for the change.
 		//
-		// Only for a change that actually happens: the preflight below returns
-		// early on kNoChange and kBlocked, and holding frames for a change that
-		// was never made would be a hitch bought for nothing.
+		// The change is deferred by a frame or two while the capture completes.
+		// Capturing after the request was the whole problem: if CS begins
+		// tearing down its targets immediately, the frame we copied was already
+		// the relatch, and replaying it held the artefact on screen for the
+		// entire window instead of hiding it (E-45).
+		//
+		// Nothing is applied on this call when a capture is needed; the frame
+		// loop applies it as soon as one exists.
+		if (g_config.transitionHoldFrames > 0 && CompositorTimer::Active() &&
+			!CompositorTimer::CaptureReady()) {
+			CompositorTimer::ArmCapture();
+			g_pendingPreset = a_preset;
+			return;
+		}
+
 		const auto hold = [](bool a_changing) {
 			if (a_changing && g_config.transitionHoldFrames > 0) {
 				CompositorTimer::HoldFrames(
@@ -697,6 +711,15 @@ void OnFrame(double a_now, double a_frameTimeMs)
 	// is no "VR is ready" event to wait on, and this is the only place that
 	// runs once per frame. Install() is a cheap flag check once it succeeds,
 	// and gives up after a bounded number of attempts if it never does.
+	// D-23b: a change is waiting on a good frame. Once the capture is in hand,
+	// apply it - the deferral is a frame or two, which nothing downstream can
+	// tell from an ordinary decision cadence.
+	if (g_pendingPreset && CompositorTimer::CaptureReady()) {
+		const auto target = *g_pendingPreset;
+		g_pendingPreset.reset();
+		g_api.SetPreset(target);
+	}
+
 	if (g_config.useOwnGpuTimer && !g_ownGpuTimer && CompositorTimer::Install()) {
 		g_ownGpuTimer = true;
 		g_csGpuTimer = false;

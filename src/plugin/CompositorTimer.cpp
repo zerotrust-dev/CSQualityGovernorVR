@@ -557,21 +557,32 @@ std::uint64_t FramesOpenedBeforeSync() noexcept
 	return g_timer.GetFramesOpenedBeforeSync();
 }
 
-void HoldFrames(std::uint32_t a_frames) noexcept
+void ArmCapture() noexcept
 {
 	if (!g_active.load(std::memory_order_acquire)) {
-		return;  // nothing hooked, nothing to hold
+		return;
 	}
-	// Capture first, hold second. The next frame submitted is still a valid
-	// old-preset one, so it is both the frame we show during the relatch and a
-	// frame the player sees normally.
-	//
 	// Both eyes start uncaptured for this window. Carrying a copy over from a
 	// previous change is not a saving: the submitted geometry alternates between
 	// per-eye and double-wide, so the old copy may be the wrong shape (E-43).
 	g_capturedThisArm[0] = false;
 	g_capturedThisArm[1] = false;
 	g_captureNext.store(true, std::memory_order_release);
+}
+
+bool CaptureReady() noexcept
+{
+	return g_capturedThisArm[0] && g_capturedThisArm[1] && g_held[0].valid && g_held[1].valid;
+}
+
+void HoldFrames(std::uint32_t a_frames) noexcept
+{
+	if (!g_active.load(std::memory_order_acquire)) {
+		return;  // nothing hooked, nothing to hold
+	}
+	// Does NOT arm a capture. The caller is expected to have captured already
+	// and confirmed it with CaptureReady, because a copy taken after the change
+	// was requested may be the relatch itself.
 	g_holdFrames.store(a_frames < kMaxHoldFrames ? a_frames : kMaxHoldFrames,
 		std::memory_order_release);
 }
