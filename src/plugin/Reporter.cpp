@@ -59,7 +59,12 @@ bool Reporter::OpenFrames()
 	// post_submit_us is appended rather than inserted: the replay parser reads
 	// columns by header name and this file has gained columns twice before, so
 	// old captures keep parsing and new ones carry E-49's measurement.
-	_frames << "wall_ms,time_s,frame_ms,preset_public,state,gpu_us,gpu_frame,post_submit_us\n";
+	// ft_* are the compositor's own delivery counters (capability test, D-25).
+	// Per-frame rather than summarised, because the question is not "do these
+	// fields move" but "do they move on the frames that were actually late" -
+	// and that can only be answered by joining them to frame_ms row by row.
+	_frames << "wall_ms,time_s,frame_ms,preset_public,state,gpu_us,gpu_frame,post_submit_us,"
+			   "ft_fresh,ft_presents,ft_dropped,ft_mispresented,ft_reproj\n";
 	return true;
 }
 
@@ -154,14 +159,16 @@ void Reporter::WriteTransition(const TransitionRecord& a_record)
 
 void Reporter::WriteFrame(std::uint64_t a_wallMs, double a_time, double a_frameTimeMs,
 	std::uint32_t a_presetPublicValue, std::string_view a_state, std::uint64_t a_gpuTimeUs,
-	std::uint64_t a_gpuFrameIndex, std::uint64_t a_postSubmitUs)
+	std::uint64_t a_gpuFrameIndex, std::uint64_t a_postSubmitUs, const FrameDelivery& a_delivery)
 {
 	if (!_frames) {
 		return;
 	}
 	_frames << a_wallMs << ',' << std::fixed << std::setprecision(4) << a_time << ','
 			<< a_frameTimeMs << ',' << a_presetPublicValue << ',' << a_state << ',' << a_gpuTimeUs
-			<< ',' << a_gpuFrameIndex << ',' << a_postSubmitUs << '\n';
+			<< ',' << a_gpuFrameIndex << ',' << a_postSubmitUs << ',' << (a_delivery.fresh ? 1 : 0)
+			<< ',' << a_delivery.presents << ',' << a_delivery.dropped << ','
+			<< a_delivery.misPresented << ',' << a_delivery.reprojectionFlags << '\n';
 }
 
 void Reporter::Finish(const std::vector<TransitionRecord>& a_records, double a_budgetMs)

@@ -1,4 +1,5 @@
 #include "ApiProbe.h"
+#include "CompositorFrameTiming.h"
 #include "CompositorTimer.h"
 #include "CSXTransitionApi.h"
 #include "Config.h"
@@ -803,6 +804,10 @@ void OnFrame(double a_now, double a_frameTimeMs)
 		logger::info("GPU timing is live: our own compositor brackets (D-21)");
 	}
 
+	// D-25 capability test. Reports every 30 s and is otherwise silent; polling
+	// happens in the WaitGetPoses hook, so this only decides when to speak.
+	FrameTiming::ReportIfDue(a_now);
+
 	if (!g_cycler) {
 		return;
 	}
@@ -890,9 +895,12 @@ void OnFrame(double a_now, double a_frameTimeMs)
 		// E-49: 0 unless our own compositor hooks are the timer - the fork's
 		// timer has no such reading, and a column of zeros from a session that
 		// could not measure it is honest.
+		const auto ft = FrameTiming::Last();
 		g_reporter->WriteFrame(WallClockMs(), a_now, a_frameTimeMs, info ? info->publicValue : 0,
 			state, gpuUs, gpuFrame,
-			g_ownGpuTimer ? CompositorTimer::LastFramePostSubmitUs() : 0);
+			g_ownGpuTimer ? CompositorTimer::LastFramePostSubmitUs() : 0,
+			FrameDelivery{ ft.fresh, ft.presents, ft.dropped, ft.misPresented,
+				ft.reprojectionFlags });
 	}
 
 	g_readout.Add(a_now, a_frameTimeMs, gpuUs, gpuFrame, g_config.cycler.frameBudgetMs,

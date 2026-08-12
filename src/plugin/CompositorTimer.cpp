@@ -1,5 +1,6 @@
 #include "CompositorTimer.h"
 
+#include "CompositorFrameTiming.h"
 #include "FrameGpuTimer.h"
 
 #include <windows.h>
@@ -264,6 +265,11 @@ EVRCompositorError WaitGetPosesThunk(void* a_self, void* a_renderPoses,
 
 	const auto result = g_originalWaitGetPoses(
 		a_self, a_renderPoses, a_renderPoseCount, a_gamePoses, a_gamePoseCount);
+
+	// The capability test. Polled here because the frame that just completed is
+	// the one GetFrameTiming(0) describes, and because this is already the
+	// render thread. Reads and records only - see CompositorFrameTiming.h.
+	csgov::FrameTiming::Poll(a_self);
 
 	// The runtime has released us to render: open the next bracket here.
 	//

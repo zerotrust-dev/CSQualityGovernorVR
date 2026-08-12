@@ -3,12 +3,27 @@
 #include "core/CyclerCore.h"
 #include "core/GovernorCore.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
 
 namespace csgov {
+
+// One frame's compositor delivery counters, for the D-25 capability test.
+//
+// Deliberately a plain struct here rather than the reader's own type: Reporter
+// belongs to the core-facing side and should not gain a dependency on the
+// plugin's OpenVR declarations just to write five integers.
+struct FrameDelivery
+{
+	bool fresh = false;
+	std::uint32_t presents = 0;
+	std::uint32_t dropped = 0;
+	std::uint32_t misPresented = 0;
+	std::uint32_t reprojectionFlags = 0;
+};
 
 // Writes the cold numbers. The point of the cycler is that one game session
 // produces a complete dataset, so everything worth knowing has to land on
@@ -67,7 +82,8 @@ public:
 	// tells a repeated reading from a fresh one.
 	void WriteFrame(std::uint64_t a_wallMs, double a_time, double a_frameTimeMs,
 		std::uint32_t a_presetPublicValue, std::string_view a_state, std::uint64_t a_gpuTimeUs,
-		std::uint64_t a_gpuFrameIndex, std::uint64_t a_postSubmitUs);
+		std::uint64_t a_gpuFrameIndex, std::uint64_t a_postSubmitUs,
+		const FrameDelivery& a_delivery);
 
 	// Aggregates all records into a comparison table and closes the transitions
 	// stream. The per-frame and API streams stay open for monitor mode.
