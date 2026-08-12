@@ -1043,6 +1043,18 @@ patch (D-11a). It is no longer what Rik runs.
 > between two presets is worth more than a 0.01 ms improvement in a cost model.
 > E-49 remains the important open problem and this was not it.
 >
+> **The full review is in `REVIEW_2026-08-12_D24.md`** — the reviewer's findings,
+> the independent re-verification, the code scope this proposal had missed, and
+> §6's pre-registration checklist, which any future cost-model comparison must
+> satisfy before it is allowed to claim anything. D-24's own refutation condition
+> was too weak: it would have passed a proposal that turned out to be a wash.
+>
+> Two entries were added to `MEASUREMENT_METHOD.md` as a result — **Rule 10** (the
+> serpentine sweep visits its endpoints twice in a row, so segmenting by
+> contiguous preset silently merges them) and **Rule 11** (do not score a proposal
+> on the analysis that produced it). Rule 8 already existed and was broken anyway,
+> which is the point Rule 11 makes.
+>
 > The original argument is kept below unaltered, because a rejected proposal is
 > only useful if the reasoning that produced it can still be inspected.
 

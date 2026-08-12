@@ -160,3 +160,45 @@ the shape.
 
 **Monotonic ordering across three or more settings is the cheapest form of
 validation available.** Prefer it to any single A/B.
+
+**10. The serpentine sweep visits its endpoints twice in a row.**
+
+The cycler traverses the ladder out and back, so the preset at each turn is
+dwelled on twice *consecutively*. Segmenting a capture by contiguous runs of
+`preset_public` therefore merges those two dwells into one block of double
+length and attributes it entirely to the first pass.
+
+On 2026-08-12 that produced a "pass 1 versus pass 2" comparison which was
+silently a seven-point fit against a six-point one, in support of a proposal that
+was subsequently rejected (see `REVIEW_2026-08-12_D24.md`).
+
+Segment by transition records, or by dwell index, or split a double-length block
+at its midpoint. Never by contiguous preset alone. And check the elapsed time
+between passes before describing them as independent samples of different scenes:
+in that capture they were 90–120 s apart, not the ten minutes claimed.
+
+**11. Do not score a proposal on the analysis that produced it.**
+
+Rules 8 and 10 were both already knowable when they were broken — one is written
+above, the other is a documented property of our own cycler. Knowing them was not
+enough, because the analysis was built by the person who wanted its conclusion.
+
+Every error in the D-24 analysis pushed the same direction: fitted quantities
+were compared against raw ones, stability was scored on the data used to fit, and
+the currency switched to whichever supported the claim. Individually each looks
+like an oversight; collectively they are a pattern, and the pattern is authorship.
+
+So, for anything that would change a decision:
+
+- Pre-register the comparison — statistic, deduplication, segmentation, held-out
+  set, and the bar — *before* computing it. `REVIEW_2026-08-12_D24.md` §6 is the
+  template.
+- Score on data not used to fit. Held-out error is the only honest test of a
+  predictor.
+- Compare like with like. A fitted quantity against a raw one flatters the fit by
+  construction.
+- Get a second opinion from something that did not write the hypothesis, and
+  hand it the suspected weaknesses rather than the case for the conclusion.
+
+The rejection this rule comes from was worth more than the proposal would have
+been if it had been accepted.
