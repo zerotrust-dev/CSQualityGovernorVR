@@ -76,3 +76,37 @@ Two things to know when reading this capture:
   and `1.243x`, which are the shipped seeds. The `UltraPerformance` seed of 1.243
   against a measured 1.167 is what refused the climb, and it is self-confirming:
   the rung can only be learned by climbing it.
+
+## CORRECTION (2026-08-12): the E-51 analysis above is wrong in three ways
+
+Independent review found method errors in the sweep-split analysis on this
+capture. All three reproduce. Do not reuse the `awk` recipe above as written.
+
+1. **It does not deduplicate.** 350 of 7028 dwell rows repeat a `gpu_frame`.
+   A repeated index means the timer produced nothing new — that is the documented
+   `GovernorSample` contract — so 5.0% of the input was stale readings counted as
+   fresh measurements. Filter on `$7 != prev` before anything else.
+
+2. **The serpentine turnaround gets pooled.** The sweep runs out and back, so the
+   endpoint preset is visited twice *consecutively*. Segmenting by contiguous runs
+   of `preset_public` merges both NativeAA dwells into one 17-second block
+   (t=128–145 s, against an 8 s dwell) and attributes it entirely to pass 1. The
+   headline comparison was therefore seven points against six.
+
+3. **The two passes are ~90–120 s apart, not "ten minutes".** Pass 1 is
+   t=70–125 s, pass 2 is t=146–198 s. They are much less independent than claimed.
+
+Corrected numbers, deduplicated and on P95 — the currency the controller actually
+decides in:
+
+    P95 fit: t = 9.26 + 15.11·f      worst residual 0.90 ms  (landing margin 1.00 ms)
+    fixed/scaled mix across passes:  0.300 -> 0.646  (115% change, not 43%)
+    UltraPerformance -> Performance: 1.290 pooled P95  (shipped seed 1.243)
+
+So the seed is mildly **optimistic**, not pessimistic — the opposite of what the
+original analysis concluded. The 1.167 figure quoted above is an undeduplicated
+mean: the wrong statistic, computed wrongly.
+
+D-24 was rejected on this basis. The per-preset cost table and the `t = A + B·f`
+shape remain useful for understanding the ladder; they were not adequate as a
+replacement for the controller's per-step table.
