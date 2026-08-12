@@ -985,6 +985,101 @@ and this decision is withdrawn rather than tuned.
 **What stays.** The fork continues to exist as the vehicle for the upstream
 patch (D-11a). It is no longer what Rik runs.
 
+### D-24 (PROPOSED) — Fit the ladder once per session; stop learning it one rung at a time
+
+**Challenges D-18, and reinterprets the evidence D-18 rests on.**
+
+D-18 replaced D-17's single fitted `k` with six measured per-step ratios, citing
+E-27: the implied `k` ran from 0.21 to 2.27 across the ladder, so "no single
+value fits both ends and the linear cost model misfits by construction."
+
+**That conclusion does not follow from that evidence.** E-27 estimated `k`
+*pairwise* — from two adjacent presets at a time. Adjacent presets differ in
+pixel fraction by as little as 0.096, so a two-point slope divides measurement
+noise by a small number and multiplies it. E-51 reproduces E-27's spread exactly
+in character from a single session (1.53 to 18.74 ms per unit pixel fraction, a
+12.3× range) using data whose *global* fit over all seven presets is stable to
+1.1× and describes every preset to within 0.39 ms. The linear model was never
+the thing that failed. The estimator was.
+
+This matters beyond bookkeeping: D-18 gave up generalisation — "each step must be
+seen at least once" — to escape a defect that a better-conditioned fit of the
+same model would have avoided.
+
+**The evidence against per-step learning (E-51).** Two sweeps, one session, ten
+minutes apart:
+
+| rung | measured s1 | measured s2 | model s1 | model s2 |
+|---|---|---|---|---|
+| UltraPerformance → Performance | 1.083× | 1.247× | 1.213 | 1.157 |
+| Performance → Balanced | 1.153× | 1.087× | 1.121 | 1.094 |
+| Balanced → Quality | 1.113× | 1.037× | 1.111 | 1.088 |
+| Quality → UltraQuality | 1.204× | 1.112× | 1.149 | 1.121 |
+| UltraQuality → Hoshipa | 1.013× | 1.140× | 1.115 | 1.096 |
+
+Mean spread between the two sweeps: **measured 0.105, model 0.030.** Learning a
+rung from its own transitions is 3.5× noisier than computing it from a fit of the
+whole ladder, because a single transition measures the scene as much as the step.
+
+**The proposal.**
+
+```
+t_target = t_now  x  (A + B·f_target) / (A + B·f_now)          f = scale²
+```
+
+`A` and `B` are fitted by least squares over all seven presets from the
+calibration sweep's dwell frames — which the sweep already measures and currently
+writes to a summary file and discards. `t_now` is the live P95 the controller
+already has.
+
+**Fit on P95, not on the mean.** E-28's lesson: a prediction and the thing it
+predicts must be in the same currency, and the controller decides on P95.
+
+**Deletes:** `_stepRatio`, `_stepMeasured`, `_stepObservations`,
+`LearnStepRatio`, `stepRatioAlpha`, `stepRatioMin`, `stepRatioMax`, the seven
+seeds, and the `_p95BeforeChange` / `_awaitingCalibration` two-point machinery.
+The multi-rung walk stops being a product of noisy ratios and becomes a lookup:
+the highest `f` whose predicted cost fits. `maxClimbRungs` survives as a safety
+clamp rather than as a mechanism.
+
+**What re-anchoring assumes, and what it does not.** Dividing by
+`(A + B·f_now)` absorbs the overall level of the scene, so the fit does not have
+to predict absolute cost — only the *shape*. It does assume a heavier scene
+raises fixed and scaled cost roughly together. E-51 shows that is only
+approximately true: the fixed/scaled ratio moved 0.54 → 0.77 between the two
+sweeps. The model-vs-model spread of 0.030 above is exactly the residual error
+that assumption leaves behind, and it is still 3.5× better than the alternative.
+
+**Answers a question the current design cannot.** The seeds are baked at build
+time from one machine, one resolution and one mod list. Change the headset's
+render resolution — Pimax's 72 Hz Upscale mode, for instance — and `B` moves
+while the seeds do not. A per-session fit re-measures it and the governor carries
+on; the shipped table cannot, and would be wrong for the whole session.
+
+**Expected effect, stated in advance.** Landing-prediction error should fall by
+roughly the ratio above. Climb-then-reverse pairs should become rarer for the
+right reason — the prediction being right, rather than D-20 refusing on memory.
+Multi-rung landings should improve most, since they currently multiply several
+noisy numbers.
+
+**Refutation condition.** Replay both committed captures and compare predicted
+landing against realised P95 after settle. If the fitted model's error is not
+materially below D-18's per-step error, the extra machinery has bought nothing
+and the proposal should be withdrawn rather than tuned. Likewise if time-weighted
+pixel fraction falls without a matching fall in changes.
+
+**Cost if wrong.** A model that misfits degrades every rung at once, where the
+table degrades one. Mitigation: keep the session's own fit residual, and when it
+exceeds a threshold widen `landingMarginMs` rather than trusting the curve — the
+fit publishes its own error, which the per-step table never could. If the sweep
+is skipped, there is no fit; fall back to shipped `A`/`B` and say so in the log
+rather than pretending to a measurement.
+
+**What it does not fix.** Nothing here addresses E-49: frames that miss while GPU
+time reads under budget. That cost is invisible to every measurement in this
+process, and a better cost model for the ladder does not make it visible. Two
+separate problems; this is only the first.
+
 ### D-20 — A climb that was just reversed is not re-tried at the same headroom
 
 **Challenges:** nothing previously decided. It adds a missing piece rather than
@@ -1764,6 +1859,7 @@ includes questions about somebody else's instrument.
 
 ## 8. Open Questions
 
+| E-51 | **E-27 refuted a two-point estimator, not the linear cost model — and per-step learning is 3.5× noisier than fitting the ladder whole.** One session, two sweeps ten minutes apart. Estimating the slope *pairwise*, as E-27 did, gives **1.53 to 18.74** ms per unit pixel fraction — a 12.3× spread, the same character as E-27's 0.21–2.27 — because adjacent presets differ in pixel fraction by as little as 0.096 and a two-point slope amplifies noise by 1/Δf. The **global least-squares fit of the same data** gives 13.13 and 11.97 across the two sweeps, a 1.1× spread, and describes all seven presets to within **0.39 ms** (`t = 8.22 + 12.34·f`, both sweeps pooled). Per-rung ratios measured from transitions disagree between the two sweeps by **0.105** on average — UltraPerformance→Performance reads 1.083× then 1.247× for the same rung in the same session — while the ratios the fit predicts disagree by **0.030**. What is *not* stable is the fixed/scaled split itself, 0.54 against 0.77, so the coefficients are a property of the scene and cannot be computed once: the ladder's **shape** is structural, its **level** is not. Also: **85% of the cost at UltraPerformance is fixed** (8.22 of 9.70 ms), so the entire seven-preset ladder only commands 12.34 ms of controllable cost. | Sweep dwells, session 2026-08-12 17:10 |
 | E-50 | **Hold decisions never reach the log, so D-20 ran correctly for a whole session and looked like it had done nothing.** `main.cpp` logs a decision only when `action != Hold`; the reason string for every hold is written to `timeline.csv` and nowhere else. D-20 blocked sixteen climbs in session 2026-08-12 12:14 — `hold: 3.19 ms spare but Performance failed at 3.52 ms spare and needs 4.02` — and the `.log` contained **one** `hold:` line for the entire run, so the first read of the session was "D-20 is not firing". Three sessions in a row were then spent on what was actually on disk rather than on what the controller did. D-12 already requires that a session be reconstructible from the logs alone *including decisions to do nothing*; the CSV satisfies the letter of that and the log does not, and the log is what anyone reads first. **A mechanism whose whole purpose is to suppress an action is invisible in a log that only records actions.** | Sessions 2026-08-12 11:31 and 12:14 |
 | E-49 | **92% of missed frames had spare GPU time by our own measurement, and the miss rate scales with preset while GPU-over-budget does not. The signal the governor steers on does not measure what causes misses.** Steady state only (Monitoring, ≥3 s after any change) in session 2026-08-12 12:14: at **Performance** (320 s at UltraPerformance, 53 s here) GPU exceeds the 13.889 ms budget on **0.7%** of frames while the headset misses **7.1%**; at **UltraPerformance** the two agree, **0.2%** against **0.7%**. Taking the missed frames directly: **92.6%** of the 269 misses at Performance, and **92.0%** of the 162 at UltraPerformance, occurred on frames our timer read as *under* budget. Session 2026-08-12 11:31 shows the same shape on the previous build — 1.4% against 8.9% at Performance, 0.1% against 1.0% at UltraPerformance — so this is two sessions, two builds, two routes. **The instrument is not in doubt for what it covers:** D-21's brackets were validated against the fork's timer at −0.18 ms, flat across load buckets, over 444 matched seconds. The bracket runs from `WaitGetPoses` return to `Submit`, so everything the compositor does after we hand over the texture is outside it by construction, and the missing time grows with the preset. **Hypothesis, not a result:** OpenComposite's copy of the submitted texture into its OpenXR swapchain scales with texture size and sits exactly there. Untested — the clean test is a second timestamp pair bracketing only the call into the real `Submit`, which either accounts for the missing milliseconds or rules the theory out. **If it holds, it reframes D-20:** the governor climbs because our signal reports room, the frames then miss for a cost never measured, and D-20's reversal memory is a symptom-level patch on a blind spot in the measurement. *Caveats:* Performance holds only 53 s of steady time against UltraPerformance's 320 s; the two highest rungs visited have ~8 s each and are too thin to read; miss threshold is `frame_ms > 14.5`. | Sessions 2026-08-12 11:31 and 12:14, steady-state analysis of `*_frames.csv` |
 | E-48 | **RC3 scores 79% of its optimum, the replay says climb more, and the headset says the opposite — the replay is the one that is wrong.** Sweep of the first clean RC3 session: governor **0.245 pixel fraction at 1.8% over budget**, constrained optimum 0.311, so **79%** (RC2 was 86–88%), at 0.3× the optimum's changes. The divergence is overwhelmingly *pixels not taken* — 0.079 against 0.004 held too long, below the optimum on 79.5% of intervals, 25 unfollowed climbs against 10 descents. **But the same session in the headset shows climbs overshooting into 15.10 ms (66 fps) for ~1.5 s before reversing**, nine times in fourteen changes. Both are real: the report also prints `worst residual 0.85 ms` with its own warning that the linear model does not describe the session, and replay judges climbs with that optimistic model. So the sweep's recommendation to climb harder would make the lived experience worse, and replay cannot see it — the D-19 blind spot in reverse. **Also corrects E-39:** `k` here is **1.077**, not the 2.75 measured on 2026-08-10. The cost model is a session average over whatever was played (Rule 7), so "RC3's curve is twice as steep" was one capture, not a property of the mod list, and the argument built on it — that `landingMarginMs` is smaller than a rung — does not hold as stated. | CI replay of `rc3-2026-08-11`, and session 2026-08-11 20:47 |
