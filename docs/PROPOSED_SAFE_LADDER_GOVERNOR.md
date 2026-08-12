@@ -1508,3 +1508,65 @@ per-visit `(sweep, index)` identity in §6.2, and the acceptance criteria in §1
 are better than anything currently in `GOVERNOR_DESIGN.md`, and D-25's simpler
 controller should be measured against this one rather than replacing it by
 default.
+
+---
+
+## Appendix B — The capability test ran, and it failed (2026-08-12, same day)
+
+Appendix A said the whole design rests on an untested assumption and that the
+test should happen before anything is built. It was built, run, and the result is
+negative and decisive. **E-53** records it.
+
+    calls 18663 | returned true 18663 (100.0%) | frame index advancing YES (100.0% fresh)
+    fields ever varied: presents NO | dropped NO | misPresented NO
+                      | reprojection NO | clientInterval yes
+
+Against a session containing **5478 late frames (31%)**, 121 of them longer than
+two display periods, with individual frames at **35 ms**. A 35 ms frame at 72 Hz
+means the previous image was scanned out at least twice — the documented meaning
+of `m_nNumDroppedFrames`. It reported zero, every time.
+
+The entry point is genuine: `GetFrameTiming` answers every call, the frame index
+is live, and `m_flClientFrameIntervalMs` and `m_flCompositorRenderGpuMs` both
+vary, so the runtime fills what it can compute for itself. The four delivery
+counters are inert defaults.
+
+**This is structural.** §2.1 of this document already noted that core OpenXR
+provides no portable result identifying which application image was scanned out.
+OpenComposite translates OpenVR onto OpenXR, so there is no source for those
+fields to carry. **No patch to OpenComposite can supply them** without a vendor
+extension that does not exist today.
+
+### What this does to the design
+
+- **§5.2's provider hierarchy has no primary provider on this stack.** Provider 1
+  answers but tells us nothing; provider 2 cannot exist for the same structural
+  reason; only provider 3, the application interval fallback, has data.
+- **§5.3, and the delivery gating throughout §8, have no input.** Every threshold
+  expressed in validated delivery events — `maxDeliveryEventRate`,
+  `maxRepeatedScanRate`, `emergencyConsecutiveEvents` — is unreachable.
+- **§8.3's delivery assessment cannot validate a climb**, so the two-horizon
+  acceptance reduces to the settle horizon alone.
+- **The terminology in §2.1 becomes more important, not less.** With no validated
+  channel, everything the controller sees is a late *application* interval. Logs
+  and reports must keep saying so.
+
+The rest of the document is unaffected and remains the reference: the
+environment signature (§4), per-visit `(sweep, index)` identity (§6.2), the
+prequential residual discipline (§7.2), the staged rollout (§17.4), and the
+acceptance criteria (§18) are all independent of where the delivery signal comes
+from.
+
+### What was actually gained
+
+The negative result is worth more than the code that produced it. It converts
+D-25's frame-interval signal from a simplification that had to be defended into
+the only option available, and it retires an entire architectural branch for the
+cost of one session. That is what the test was for.
+
+**One gap in how the test was built, for whoever repeats it:**
+`m_flClientFrameIntervalMs` is the runtime's *own* measurement of the frame
+period and would be the ideal input to §4.2's refresh derivation — better than our
+own frame timing, which turns out to be quantised to 1/6 ms steps. It was logged
+only in the periodic summary, not written per-frame to the CSV. Add it to the
+per-frame columns next time.
