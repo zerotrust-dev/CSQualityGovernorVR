@@ -985,6 +985,160 @@ and this decision is withdrawn rather than tuned.
 **What stays.** The fork continues to exist as the vehicle for the upstream
 patch (D-11a). It is no longer what Rik runs.
 
+### D-25 (PROPOSED) — Climb on measured outcome, not predicted cost: an adaptive per-rung threshold
+
+**Challenges D-18**, by removing the cost table from the decision path entirely,
+and abandons the direction D-24 took. **Subsumes D-20**, whose failure memory
+becomes the mechanism rather than a guard bolted on top. Adopts two parts of
+`PROPOSED_SAFE_LADDER_GOVERNOR.md` and declines the rest for now.
+
+**The observation that motivates it.** Both D-18 and D-24 put a *predictor*
+between the measurement and the decision — measure GPU cost, predict a landing,
+decide. Both failed, and both failed inside the predictor. E-52 is the second
+time in one day that a cost model was refuted while the thing it was predicting
+for went unaddressed.
+
+**The sensor argument, which is the real content.** E-49: on **92% of missed
+frames the GPU timer read under budget.** GPU time is blind to most of what makes
+frames miss. Frame delivery is not — and the compositor cap censors only the
+*good* side (E-1): when the frame is delivered on time everything reads 13.889 ms,
+but a missed frame reports its true length. So the cheapest possible signal, the
+application's own frame interval, sees the failure that our carefully built GPU
+instrument does not.
+
+**Why thresholds and not costs.** A fixed headroom rule does not work here:
+`UltraPerformance → Performance` measures **1.290×** in deduplicated pooled P95
+(E-52), so climbing at 20% headroom lands over budget nearly every time at the
+bottom of the ladder, which is where most time is spent. Rather than predict that
+number, learn the decision directly:
+
+```
+climb from rung R  when  headroom_p95 > threshold[R]  and  clean for T
+
+on a climb that fails:   threshold[R] = headroom_at_attempt + retryMargin
+on a long clean stretch: threshold[R] -= decayPerInterval        (floor at 0)
+```
+
+Six numbers again — but a threshold is **falsified directly by the outcome it
+gates**, where a cost ratio is falsified only through a prediction built on top of
+it. That extra step is exactly where D-18's dilution and D-24's currency error
+lived.
+
+**The decay is the exploration mechanism.** A pessimistic threshold that never
+relaxes is self-confirming — the rung can only be learned by climbing it, and the
+threshold is what refuses the climb. That deadlock is what held the governor at
+UltraPerformance on 2026-08-12 17:14 with the log reading *"2.64 ms spare but one
+rung would land past 12.89 ms"*. Decaying while clean means the controller
+eventually tries, and settles just above the real requirement. This is the
+bounded probe of `PROPOSED_SAFE_LADDER_GOVERNOR.md` §8.2D without a state machine
+for it.
+
+**The controller, in full:**
+
+```
+every evalInterval, over a 2 s window:
+  if   missRate > descendMissRate  or  consecutiveMisses >= N
+                                          -> descend 1 rung (severe: several)
+  elif cleanSeconds > climbCleanSeconds
+       and headroomP95 > threshold[current] -> climb 1 rung
+  else                                      -> hold
+```
+
+**Deletes from the decision path:** `_stepRatio`, `_stepMeasured`,
+`_stepObservations`, `LearnStepRatio`, the seven seeds, `landingMarginMs`, the
+landing check and its multi-rung walk, and D-24's fit. The calibration sweep stops
+feeding control and becomes diagnostics — which also removes roughly two minutes
+of quality thrash per session, including the stretch at NativeAA that measures
+**24.22 ms P95, 74% over budget**.
+
+**Keeps two things from `PROPOSED_SAFE_LADDER_GOVERNOR.md`**, both small and both
+independently correct regardless of this proposal:
+
+- **§4.2 — derive the budget from measured refresh.** The rules above hardcode a
+  period. At 90 Hz they silently mean the wrong thing, and today `TargetHz` is
+  taken on trust from the ini.
+- **§4.1 — canonical per-eye geometry from submitted bounds.** A headset
+  resolution change is then *detected*, and thresholds reset rather than
+  persisting into what is effectively a different machine. This is the
+  configuration-agnosticism requirement, met without the full signature
+  apparatus.
+
+**Also required, and not optional:** the readout currently prints headroom
+computed from the **mean** while the controller decides on **P95** — the two
+disagreed by more than a rung's worth on 2026-08-12. Whatever this proposal
+gates on must be what the log reports.
+
+**Starting parameters, explicitly not tuned:**
+
+```
+descendMissRate        0.05 over a 2 s window
+consecutiveMissesN     3
+climbCleanSeconds      8
+thresholdInit          0.35 of budget      (pessimistic; walks down)
+thresholdDecay         0.01 of budget per climbCleanSeconds elapsed clean
+retryMarginMs          0.5                 (inherited from D-20)
+cooldownSeconds        3
+maxDescentRungs        3
+```
+
+**Cost, stated in advance.** This is a hill climber: it *must* overshoot to find
+the edge, so the oscillation previous decisions treated as a defect becomes the
+mechanism. Sessions already run 3.4 changes/min, which is at the stated
+tolerance. The binding constraint is the transition freeze, measured at
+**96–130 ms**; at 3 changes/min that is ~0.6% of session time, at one change per
+5 s about 2.5% plus recovery frames. The ~85 ms relatch inside it is Community
+Shaders' and cannot be removed from here (see `UPSTREAM_RENDER_SCALE.md`).
+
+**What it does not fix.** It does not explain E-49 — it routes around it by acting
+on the outcome instead of the cause. If the missed frames turn out to be
+CPU-bound, descending cannot help and the controller will strip quality for a
+cause it cannot fix. Our own data argues against that (misses run 0.3–1.0% at
+UltraPerformance against 7–11% at Performance, so delivery *does* respond to the
+preset), and that responsiveness is the precondition for this entire proposal.
+**If a capture ever shows delivery not responding to the preset, the correct
+response is to stop descending and report ungovernable, not to descend harder.**
+
+#### D-25's pre-registered test
+
+Written before the comparison is computed, per Rule 11 and
+`REVIEW_2026-08-12_D24.md` §6. D-24 was passed by its own refutation condition
+while being a wash; this bar is set to fail that.
+
+**Parsing, fixed now:** deduplicate by `gpu_frame` (Rule 8); segment visits by
+`(sweep, index)`, never by contiguous preset (Rule 10); nearest-rank P95; exclude
+the settle window after every change from steady statistics; equal weight per
+visit.
+
+**A miss is defined as** `frame_ms > budget × 1.05`, with the budget derived from
+measured refresh. This is a late application interval, **not** a headset miss —
+that distinction is `PROPOSED_SAFE_LADDER_GOVERNOR.md` §2.1 and logs must not
+blur it.
+
+**What replay can and cannot settle.** Replay cannot certify this controller's
+climbs: the miss rate at a preset the capture never occupied is not in the
+capture, and synthesising it from the cost model would score the new controller
+with the machinery it exists to replace. Replay is therefore limited to
+determinism, change-rate and oscillation behaviour, threshold bookkeeping, and
+scoring only over intervals actually occupied. **The decision comes from live
+sessions**, shadow-mode first.
+
+**Scored against the current controller, on held-out sessions not used to pick
+any parameter above:**
+
+| | must |
+|---|---|
+| late-interval rate | no worse than +0.5 percentage points |
+| longest consecutive bad run | no increase |
+| time-weighted pixel fraction | **at least +5% relative** |
+| changes per minute | ≤ 6 |
+| time in the two lowest rungs | no increase |
+
+**Refutation.** If pixel fraction does not improve materially, the churn buys
+nothing and the proposal is withdrawn rather than tuned. If the late-interval
+rate or the worst bad run degrades at all, it is withdrawn regardless of what
+pixel fraction did — quality gained by delivering fewer frames is not a gain, and
+symmetric averages hide exactly that.
+
 ### D-24 (REJECTED — failed its own refutation condition before a line was written)
 
 > **Outcome: rejected on review, by the test it had itself pre-registered.**
