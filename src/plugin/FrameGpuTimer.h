@@ -75,6 +75,28 @@ public:
 	// the difference between "no budget left" and "a fifth of it spare".
 	void OnCompositorSubmit();
 
+	// Called after the runtime's own Submit returns. E-49.
+	//
+	// What this measures, exactly. OnCompositorSubmit re-stamps the end before
+	// EVERY eye, so the first eye's compositor work lands INSIDE the bracket -
+	// the second eye's stamp comes after it. What falls outside is the final
+	// eye's submit and nothing else. The delta from `end` to here is therefore
+	// precisely the work the main measurement cannot see, not an estimate of
+	// it.
+	//
+	// Why it is worth measuring: on two sessions, 92% of missed frames had
+	// spare GPU time by the main bracket's reckoning, and the miss rate climbs
+	// with the preset while GPU-over-budget does not. The compositor copies the
+	// submitted texture into its own swapchain, and that copy scales with
+	// texture size - which is what a preset change changes.
+	//
+	// DIAGNOSTIC ONLY. This does not feed the controller. A timestamp delta
+	// counts GPU idle as work, and if the runtime blocks on pacing inside this
+	// call the reading includes the wait - the same defect that made Present a
+	// bad close boundary (+3.95 ms at low load). Whether that happens here is
+	// unknown, which is the point of measuring before deciding anything.
+	void OnCompositorSubmitReturned();
+
 	// Called at Present. Closes the bracket if no submit happened - loading
 	// screens and flat menus never reach the compositor - and collects results.
 	void EndFrame();
@@ -97,6 +119,19 @@ public:
 		return lastFramePacked.load(std::memory_order_acquire) >> kGpuTimeBits;
 	}
 
+	// E-49: GPU time spent inside the final eye's compositor submit - the work
+	// that falls outside the main bracket. 0 means no measurement, which is the
+	// normal state on a frame that never reached the compositor.
+	uint64_t GetLastFramePostSubmitUs() const
+	{
+		return lastPostSubmitPacked.load(std::memory_order_acquire) & kGpuTimeMask;
+	}
+
+	uint64_t GetLastFramePostSubmitFrameIndex() const
+	{
+		return lastPostSubmitPacked.load(std::memory_order_acquire) >> kGpuTimeBits;
+	}
+
 	// Diagnostic counters, for the log rather than the API.
 	uint64_t GetFramesOpenedBeforeSync() const
 	{
@@ -109,8 +144,15 @@ private:
 		Microsoft::WRL::ComPtr<ID3D11Query> disjoint;
 		Microsoft::WRL::ComPtr<ID3D11Query> begin;
 		Microsoft::WRL::ComPtr<ID3D11Query> end;
+		// E-49. Separate from `end` because `end` is re-stamped per eye and
+		// this one has to survive as the point AFTER the last of them.
+		Microsoft::WRL::ComPtr<ID3D11Query> postSubmit;
 		uint64_t frameIndex = 0;
 		bool inFlight = false;
+		// Whether postSubmit was stamped for this frame. Read at collection
+		// time, long after the frame it describes, so it cannot be a live
+		// member like endStamped.
+		bool postSubmitStamped = false;
 	};
 
 	// Non-blocking. Publishes any completed frame and frees its slot.
@@ -128,6 +170,9 @@ private:
 	// Whether a compositor submit has already stamped the end timestamp this
 	// frame. Later submits re-stamp it; Present only stamps if none did.
 	bool endStamped = false;
+	// E-49: whether the frame being written has had its post-submit stamp yet.
+	// Copied into the frame's slot at close, since collection happens later.
+	bool postSubmitStamped = false;
 	uint64_t submittedFrameIndex = 0;
 
 	// (frameIndex << kGpuTimeBits) | microseconds, published as one value so a
@@ -137,6 +182,8 @@ private:
 	static constexpr uint32_t kGpuTimeBits = 20;
 	static constexpr uint64_t kGpuTimeMask = (1ull << kGpuTimeBits) - 1;
 	std::atomic_uint64_t lastFramePacked{ 0 };
+	// E-49, packed the same way and for the same reason.
+	std::atomic_uint64_t lastPostSubmitPacked{ 0 };
 
 	std::atomic_uint64_t framesOpenedBeforeSync{ 0 };
 	uint64_t frameCounter = 0;

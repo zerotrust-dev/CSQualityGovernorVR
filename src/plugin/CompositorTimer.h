@@ -36,6 +36,15 @@ void Uninstall();
 [[nodiscard]] std::uint64_t LastFrameGpuTimeUs() noexcept;
 [[nodiscard]] std::uint64_t LastFrameGpuTimeFrameIndex() noexcept;
 
+// E-49: microseconds spent inside the runtime's own Submit for the last eye of
+// the frame - the work that falls outside the bracket above, by construction.
+//
+// Recorded, never acted on. See FrameGpuTimer::OnCompositorSubmitReturned for
+// what it does and does not establish; in particular a timestamp delta counts
+// GPU idle as work, so this is a ceiling on the compositor's cost rather than a
+// measurement of it until something rules pacing out.
+[[nodiscard]] std::uint64_t LastFramePostSubmitUs() noexcept;
+
 // Frames whose bracket opened before WaitGetPoses returned. In the fork this
 // was the diagnostic that caught the real error - 80.5% of frames opening
 // early, worth +1.18 ms of phantom GPU time (E-22).

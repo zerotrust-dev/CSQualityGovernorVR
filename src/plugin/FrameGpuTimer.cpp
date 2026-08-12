@@ -18,13 +18,15 @@ void FrameGpuTimer::Initialize(ID3D11Device* a_device, ID3D11DeviceContext* a_co
 	for (auto& frame : frames) {
 		if (FAILED(a_device->CreateQuery(&disjointDesc, frame.disjoint.GetAddressOf())) ||
 			FAILED(a_device->CreateQuery(&timestampDesc, frame.begin.GetAddressOf())) ||
-			FAILED(a_device->CreateQuery(&timestampDesc, frame.end.GetAddressOf()))) {
+			FAILED(a_device->CreateQuery(&timestampDesc, frame.end.GetAddressOf())) ||
+			FAILED(a_device->CreateQuery(&timestampDesc, frame.postSubmit.GetAddressOf()))) {
 			logger::warn("[FrameGpuTimer] Failed to create timestamp queries; frame GPU time will be unavailable");
 			Release();
 			return;
 		}
 		frame.frameIndex = 0;
 		frame.inFlight = false;
+		frame.postSubmitStamped = false;
 	}
 
 	writeSlot = 0;
@@ -32,6 +34,7 @@ void FrameGpuTimer::Initialize(ID3D11Device* a_device, ID3D11DeviceContext* a_co
 	armed = false;
 	bracketOpen = false;
 	endStamped = false;
+	postSubmitStamped = false;
 	submittedFrameIndex = 0;
 	initialized = true;
 
@@ -44,8 +47,10 @@ void FrameGpuTimer::Release()
 		frame.disjoint = nullptr;
 		frame.begin = nullptr;
 		frame.end = nullptr;
+		frame.postSubmit = nullptr;
 		frame.frameIndex = 0;
 		frame.inFlight = false;
+		frame.postSubmitStamped = false;
 	}
 
 	context = nullptr;
@@ -55,8 +60,10 @@ void FrameGpuTimer::Release()
 	armed = false;
 	bracketOpen = false;
 	endStamped = false;
+	postSubmitStamped = false;
 	submittedFrameIndex = 0;
 	lastFramePacked.store(0, std::memory_order_release);
+	lastPostSubmitPacked.store(0, std::memory_order_release);
 	framesOpenedBeforeSync.store(0, std::memory_order_relaxed);
 	frameCounter = 0;
 }
@@ -70,6 +77,7 @@ void FrameGpuTimer::ArmFrame()
 	// render target relatch) would otherwise leak its slot.
 	bracketOpen = false;
 	endStamped = false;
+	postSubmitStamped = false;
 
 	CollectCompletedFrames();
 
@@ -124,6 +132,21 @@ void FrameGpuTimer::OnCompositorSubmit()
 	endStamped = true;
 }
 
+void FrameGpuTimer::OnCompositorSubmitReturned()
+{
+	// endStamped, not just bracketOpen: without a matching end stamp there is
+	// no interval to measure from, and a stray stamp would be read against
+	// whatever `end` held from an earlier frame.
+	if (!initialized || !bracketOpen || !endStamped)
+		return;
+
+	// Re-stamped per eye like the end above, so the LAST one wins and the
+	// interval measured is the final eye's submit - which is exactly the part
+	// that falls outside the main bracket.
+	context->End(frames[openSlot].postSubmit.Get());
+	postSubmitStamped = true;
+}
+
 void FrameGpuTimer::EndFrame()
 {
 	if (!initialized)
@@ -141,8 +164,12 @@ void FrameGpuTimer::EndFrame()
 		context->End(frame.disjoint.Get());
 		frame.frameIndex = ++submittedFrameIndex;
 		frame.inFlight = true;
+		// Carried into the slot because collection happens frames later, by
+		// which time the live flag describes a different frame.
+		frame.postSubmitStamped = postSubmitStamped;
 		bracketOpen = false;
 		endStamped = false;
+		postSubmitStamped = false;
 	}
 
 	CollectCompletedFrames();
@@ -197,5 +224,23 @@ bool FrameGpuTimer::TryCollectFrame(FrameQueries& a_frame)
 	// One store, so a reader cannot observe a new index against an old time.
 	lastFramePacked.store((a_frame.frameIndex << kGpuTimeBits) | (elapsedUs & kGpuTimeMask),
 		std::memory_order_release);
+
+	// E-49, published separately and only when this frame actually stamped it.
+	// Everything the main reading is guarded by applies here too: the same
+	// disjoint block covers it, so its Disjoint and Frequency checks above hold
+	// for this delta as well.
+	if (a_frame.postSubmitStamped) {
+		uint64_t postTicks = 0;
+		if (context->GetData(a_frame.postSubmit.Get(), &postTicks, sizeof(postTicks),
+				D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+			postTicks > endTicks) {
+			const uint64_t postUs = ((postTicks - endTicks) * 1000000ull) / disjointData.Frequency;
+			if (postUs <= kMaxPlausibleFrameGpuTimeUs) {
+				lastPostSubmitPacked.store(
+					(a_frame.frameIndex << kGpuTimeBits) | (postUs & kGpuTimeMask),
+					std::memory_order_release);
+			}
+		}
+	}
 	return true;
 }

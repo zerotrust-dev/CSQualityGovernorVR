@@ -56,7 +56,10 @@ bool Reporter::OpenFrames()
 	// stats CSV, whose rows are local wall-clock with a UTC offset. Elapsed
 	// seconds plus a filename stamp is not enough: the stamp has one-second
 	// resolution, which is ten rows of slop against 100 ms stat windows.
-	_frames << "wall_ms,time_s,frame_ms,preset_public,state,gpu_us,gpu_frame\n";
+	// post_submit_us is appended rather than inserted: the replay parser reads
+	// columns by header name and this file has gained columns twice before, so
+	// old captures keep parsing and new ones carry E-49's measurement.
+	_frames << "wall_ms,time_s,frame_ms,preset_public,state,gpu_us,gpu_frame,post_submit_us\n";
 	return true;
 }
 
@@ -151,14 +154,14 @@ void Reporter::WriteTransition(const TransitionRecord& a_record)
 
 void Reporter::WriteFrame(std::uint64_t a_wallMs, double a_time, double a_frameTimeMs,
 	std::uint32_t a_presetPublicValue, std::string_view a_state, std::uint64_t a_gpuTimeUs,
-	std::uint64_t a_gpuFrameIndex)
+	std::uint64_t a_gpuFrameIndex, std::uint64_t a_postSubmitUs)
 {
 	if (!_frames) {
 		return;
 	}
 	_frames << a_wallMs << ',' << std::fixed << std::setprecision(4) << a_time << ','
 			<< a_frameTimeMs << ',' << a_presetPublicValue << ',' << a_state << ',' << a_gpuTimeUs
-			<< ',' << a_gpuFrameIndex << '\n';
+			<< ',' << a_gpuFrameIndex << ',' << a_postSubmitUs << '\n';
 }
 
 void Reporter::Finish(const std::vector<TransitionRecord>& a_records, double a_budgetMs)

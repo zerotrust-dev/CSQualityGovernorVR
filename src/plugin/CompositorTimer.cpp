@@ -288,6 +288,24 @@ EVRCompositorError WaitGetPosesThunk(void* a_self, void* a_renderPoses,
 	return result;
 }
 
+// Every path out of SubmitThunk goes through here, so the post-submit stamp
+// cannot be forgotten on one of them. E-49: this brackets the runtime's own
+// work - on OpenComposite, the copy of our texture into its OpenXR swapchain -
+// which is the part of the frame the main measurement cannot see.
+//
+// The fail-open rule below is why this is a wrapper rather than a stamp added
+// after each call: there are four ways out of that function and there will be
+// more, since the submit path is CS's to change.
+EVRCompositorError CallOriginalSubmit(void* a_self, EVREye a_eye, const Texture_t* a_texture,
+	const VRTextureBounds_t* a_bounds, EVRSubmitFlags a_flags)
+{
+	const auto result = g_originalSubmit(a_self, a_eye, a_texture, a_bounds, a_flags);
+	if (g_deviceReady.load(std::memory_order_acquire)) {
+		g_timer.OnCompositorSubmitReturned();
+	}
+	return result;
+}
+
 EVRCompositorError SubmitThunk(void* a_self, EVREye a_eye, const Texture_t* a_texture,
 	const VRTextureBounds_t* a_bounds, EVRSubmitFlags a_flags)
 {
@@ -343,7 +361,7 @@ EVRCompositorError SubmitThunk(void* a_self, EVREye a_eye, const Texture_t* a_te
 							 "be visible",
 					a_flags);
 			}
-			return g_originalSubmit(a_self, a_eye, a_texture, a_bounds, a_flags);
+			return CallOriginalSubmit(a_self, a_eye, a_texture, a_bounds, a_flags);
 		}
 
 		if (g_capturedThisArm[eye] && g_held[eye].valid) {
@@ -357,7 +375,7 @@ EVRCompositorError SubmitThunk(void* a_self, EVREye a_eye, const Texture_t* a_te
 			substitute.eType = held.eType;
 			substitute.eColorSpace = held.eColorSpace;
 			g_replayed.fetch_add(1, std::memory_order_relaxed);
-			return g_originalSubmit(a_self, a_eye, &substitute,
+			return CallOriginalSubmit(a_self, a_eye, &substitute,
 				held.hasBounds ? &held.bounds : nullptr, a_flags);
 		}
 		// No copy to give: pass the real frame through.
@@ -375,10 +393,10 @@ EVRCompositorError SubmitThunk(void* a_self, EVREye a_eye, const Texture_t* a_te
 		// frame we cannot copy, and the correct response to all of them is the
 		// same - get out of the way.
 		g_withheld.fetch_add(1, std::memory_order_relaxed);
-		return g_originalSubmit(a_self, a_eye, a_texture, a_bounds, a_flags);
+		return CallOriginalSubmit(a_self, a_eye, a_texture, a_bounds, a_flags);
 	}
 
-	return g_originalSubmit(a_self, a_eye, a_texture, a_bounds, a_flags);
+	return CallOriginalSubmit(a_self, a_eye, a_texture, a_bounds, a_flags);
 }
 
 // Replaces one vtable entry and returns what was there.
@@ -552,6 +570,16 @@ bool Active() noexcept
 std::uint64_t LastFrameGpuTimeUs() noexcept
 {
 	return g_timer.GetLastFrameGpuTimeUs();
+}
+
+std::uint64_t LastFramePostSubmitUs() noexcept
+{
+	// Only meaningful alongside the frame it belongs to: a post-submit reading
+	// left over from an earlier frame paired with a current GPU time would
+	// invent a correlation. Reported as absent instead.
+	return g_timer.GetLastFramePostSubmitFrameIndex() == g_timer.GetLastFrameGpuTimeFrameIndex() ?
+	           g_timer.GetLastFramePostSubmitUs() :
+	           0;
 }
 
 std::uint64_t LastFrameGpuTimeFrameIndex() noexcept

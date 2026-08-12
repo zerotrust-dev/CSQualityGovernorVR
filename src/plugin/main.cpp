@@ -476,10 +476,19 @@ struct GpuReadout
 	std::uint32_t gpuSamples = 0;
 	std::uint64_t lastGpuFrameIndex = 0;
 	std::uint32_t staleFrames = 0;
+	// E-49, averaged over the same second as everything else here so the two
+	// numbers can be read against each other at a glance.
+	double postSubmitMsSum = 0.0;
+	std::uint32_t postSubmitSamples = 0;
 
 	void Add(double a_now, double a_frameTimeMs, std::uint64_t a_gpuUs,
-		std::uint64_t a_gpuFrameIndex, double a_budgetMs, std::string_view a_presetName)
+		std::uint64_t a_gpuFrameIndex, double a_budgetMs, std::string_view a_presetName,
+		std::uint64_t a_postSubmitUs)
 	{
+		if (a_postSubmitUs > 0) {
+			postSubmitMsSum += static_cast<double>(a_postSubmitUs) / 1000.0;
+			++postSubmitSamples;
+		}
 		if (windowStart < 0.0) {
 			windowStart = a_now;
 		}
@@ -510,11 +519,19 @@ struct GpuReadout
 			// Percentages are formatted by hand: fmt v12 rejects the "%"
 			// presentation type at compile time.
 			const double headroom = a_budgetMs > 0.0 ? (1.0 - meanGpuMs / a_budgetMs) * 100.0 : 0.0;
+			// E-49: printed only when there is one, so a session on the fork's
+			// timer reads exactly as it did before.
+			const double meanPostSubmitMs =
+				postSubmitSamples > 0 ? postSubmitMsSum / postSubmitSamples : 0.0;
 			logger::info(
 				"[readout] {} | {:.1f} fps | frame {:.2f} ms | gpu {:.2f} ms | headroom {:.1f}% | "
-				"gpu frames {} of {} ({} repeated)",
+				"gpu frames {} of {} ({} repeated){}",
 				a_presetName, fps, meanFrameMs, meanGpuMs, headroom, gpuSamples, frames,
-				staleFrames);
+				staleFrames,
+				postSubmitSamples > 0 ?
+					std::format(" | post-submit {:.2f} ms ({} frames)", meanPostSubmitMs,
+						postSubmitSamples) :
+					std::string{});
 		}
 
 		windowStart = a_now;
@@ -523,6 +540,10 @@ struct GpuReadout
 		gpuMsSum = 0.0;
 		gpuSamples = 0;
 		staleFrames = 0;
+		// Without these the readout would silently become a session average
+		// instead of a per-second one.
+		postSubmitMsSum = 0.0;
+		postSubmitSamples = 0;
 	}
 };
 
@@ -866,12 +887,16 @@ void OnFrame(double a_now, double a_frameTimeMs)
 	const auto info = monitoring ? FindPresetByPublicValue(g_monitorPreset)
 								 : FindPreset(g_cycler->CurrentTarget());
 	if (g_config.writePerFrameCsv && g_reporter) {
+		// E-49: 0 unless our own compositor hooks are the timer - the fork's
+		// timer has no such reading, and a column of zeros from a session that
+		// could not measure it is honest.
 		g_reporter->WriteFrame(WallClockMs(), a_now, a_frameTimeMs, info ? info->publicValue : 0,
-			state, gpuUs, gpuFrame);
+			state, gpuUs, gpuFrame,
+			g_ownGpuTimer ? CompositorTimer::LastFramePostSubmitUs() : 0);
 	}
 
 	g_readout.Add(a_now, a_frameTimeMs, gpuUs, gpuFrame, g_config.cycler.frameBudgetMs,
-		info ? info->name : "?");
+		info ? info->name : "?", g_ownGpuTimer ? CompositorTimer::LastFramePostSubmitUs() : 0);
 
 	RunShadowGovernor(a_now, a_frameTimeMs, gpuUs, gpuFrame, info ? info->preset : Preset::NativeAA,
 		info ? info->publicValue : 0, monitoring);
