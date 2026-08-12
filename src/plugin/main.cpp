@@ -400,6 +400,34 @@ std::optional<Preset> g_bufferedTarget;
 // would be a spin, not a recovery.
 bool g_governorDisabled = false;
 
+// E-50: a hold is a decision, and D-12 asks for a session to be reconstructible
+// from the log alone INCLUDING decisions to do nothing. Only changes were being
+// logged, so D-20 - whose entire purpose is to suppress a change - blocked
+// sixteen climbs in one session and left a single hold line behind. The whole
+// mechanism read as "not firing".
+//
+// Logging every hold would drown the log at 2 Hz, and the reason text carries
+// live numbers, so comparing whole strings would log every tick regardless. The
+// key is the reason with its digits stripped: the SHAPE of the reason, which
+// changes only when the controller changes its mind about why it is holding.
+std::string g_lastHoldKey;
+double g_lastHoldLogAt = -1.0e9;
+// A long hold still leaves a trail, so a quiet stretch is distinguishable from
+// a governor that stopped evaluating.
+constexpr double kHoldRelogSeconds = 30.0;
+
+[[nodiscard]] std::string HoldReasonKey(std::string_view a_reason)
+{
+	std::string key;
+	key.reserve(a_reason.size());
+	for (const char c : a_reason) {
+		if ((c < '0' || c > '9') && c != '.') {
+			key.push_back(c);
+		}
+	}
+	return key;
+}
+
 // Timestamps of applied changes, for the circuit breaker. There is no in-game
 // way to stop the governor, so it has to be able to stop itself.
 std::deque<double> g_appliedAt;
@@ -644,6 +672,21 @@ void RunShadowGovernor(double a_now, double a_frameTimeMs, std::uint64_t a_gpuUs
 	}
 
 	std::string_view outcome = "hold";
+
+	if (decision->action == GovernorAction::Hold) {
+		// E-50. Logged when the reason's shape changes, or every
+		// kHoldRelogSeconds so a long hold is not silence.
+		auto key = HoldReasonKey(decision->reason);
+		if (key != g_lastHoldKey || a_now - g_lastHoldLogAt >= kHoldRelogSeconds) {
+			logger::info("[governor] hold {} | {} | tier={} p95gpu={:.2f}ms headroom={:.2f}ms "
+						 "p95frame={:.2f}ms n={}",
+				PresetName(a_preset), decision->reason, GovernorTierName(decision->tier),
+				decision->p95GpuMs, decision->headroomMs, decision->p95FrameMs,
+				decision->samples);
+			g_lastHoldKey = std::move(key);
+			g_lastHoldLogAt = a_now;
+		}
+	}
 
 	if (decision->action != GovernorAction::Hold) {
 		// Live only after the sweep. The cycler owns the lever until then, and
