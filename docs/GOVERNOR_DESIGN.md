@@ -1044,6 +1044,31 @@ sits one rung lower than it could until the forget timer expires. That is the
 same trade D-9 already accepted on the other tier, and it fails in the safe
 direction — fewer frames over budget, not more.
 
+**Where D-20 actually bites, found by writing its test.** The first version of
+the test built the obvious scenario — a rung that costs far more than the seed
+predicts — and it failed: D-20 never fired, because it never got the chance. The
+climb taught D-18 a step ratio of 1.67, and from then on the *landing check*
+refused the re-try on its own. The reason string said "would land past", not
+"failed at".
+
+That is not a defect in either mechanism, and it is worth stating plainly because
+it narrows what D-20 is for:
+
+- When the step is **measurable**, D-18 already prevents the repeat. One failed
+  climb is enough to correct the belief, and the landing check does the rest.
+- D-20 covers the case where the belief **cannot be corrected by the attempt** —
+  the measured ratio is rejected as implausible (a scene that moved during the
+  transition), or is smoothed away, or the cost is not attributable to the step
+  at all. There the landing check keeps predicting a climb that fits, and the
+  only evidence left is that one already did not hold.
+
+E-48's climbs were of the second kind: permitted by a landing prediction the cost
+model got *wrong*, not by an absent one — which is why the replay's own residual
+warning (0.85 ms worst case) matters here. The test therefore sets
+`stepRatioMax` low enough to reject the observation, which is the honest way to
+reproduce a belief that will not learn. Testing D-20 in a scenario where D-18 can
+learn tests D-18.
+
 ### D-19 (WITHDRAWN — refuted by E-32, code reverted) — A step is only measured once the transition has settled
 
 > **Outcome: implemented, tested against its own pre-registered condition, and

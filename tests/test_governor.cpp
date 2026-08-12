@@ -420,11 +420,20 @@ TEST_CASE("a rung that just failed is not re-tried at the same headroom", "[gove
 	auto config = TestConfig();
 	config.maxClimbRungs = 1;
 	config.climbRetryMarginMs = 0.5;
+	// The step measures 15/9 = 1.67, which this rejects as implausible, so the
+	// belief stays at its seed and the landing check keeps predicting a climb
+	// that fits. Without that, D-18 learns the true cost after one attempt and
+	// the landing check refuses the retry by itself - which is a fine outcome
+	// but tests D-18 rather than D-20.
+	//
+	// It is also the live failure: E-48's climbs were permitted by a landing
+	// prediction the cost model got wrong, not by an absent one.
+	config.stepRatioMax = 1.5;
 
 	Harness h{ config, Preset::Balanced };
 
-	// Cheap enough to climb, but the rung above costs more than it predicts -
-	// so the climb lands over budget and is reversed.
+	// Cheap enough to climb, but the rung above costs more than predicted - so
+	// the climb lands over budget and is reversed.
 	const auto cost = [](Preset a_preset) {
 		return a_preset == Preset::Balanced ? 9.0 : 15.0;  // over the 13.889 budget
 	};
