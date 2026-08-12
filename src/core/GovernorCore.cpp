@@ -392,7 +392,9 @@ GovernorDecision GovernorCore::Evaluate(double a_nowSeconds, Preset a_current)
 	           EvaluateFrametime(a_nowSeconds, a_current, std::move(decision));
 }
 
-GovernorDecision GovernorCore::EvaluateHeadroom(double, Preset a_current,
+// The time parameter was unnamed until D-20, which needs it: a rung's failure
+// is remembered with the moment it happened, so the memory can expire.
+GovernorDecision GovernorCore::EvaluateHeadroom(double a_nowSeconds, Preset a_current,
 	GovernorDecision a_base)
 {
 	auto decision = std::move(a_base);
