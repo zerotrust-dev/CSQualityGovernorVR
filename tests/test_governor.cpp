@@ -550,3 +550,58 @@ TEST_CASE("the first measurement replaces the seed rather than blending", "[gove
 	// Adopted whole, not 30% of the way from the seed.
 	CHECK(h.core.StepRatio(Preset::Balanced) == Approx(1.30).margin(0.02));
 }
+
+TEST_CASE("simple mode climbs on overhead", "[governor][simple]")
+{
+	// The rule as a person states it: enough overhead, go up one.
+	auto config = TestConfig();
+	config.simpleMode = true;
+	config.simpleClimbHeadroomFrac = 0.20;
+	config.simpleDescendFps = 70.0;
+
+	Harness h{ config, Preset::UltraPerformance };
+	// 10 ms against 13.889 is 28% overhead, and 13.889 ms frames are exactly
+	// 72 fps - so the descend half must not fire.
+	h.Run(6.0, 13.889, 10.0);
+
+	REQUIRE_FALSE(h.changes.empty());
+	CHECK(h.changes.front().action == GovernorAction::Climb);
+	// One rung, never several. The whole point is that a person can follow it.
+	CHECK(h.changes.front().target == Preset::Performance);
+	CHECK(h.changes.front().reason.find("simple:") != std::string::npos);
+}
+
+TEST_CASE("simple mode descends on fps regardless of spare GPU", "[governor][simple]")
+{
+	// The half that is easy to leave untested. 15 ms frames are 66.7 fps, and
+	// the GPU is nearly idle - so a rule that only looked at overhead would
+	// climb here, which is exactly the mistake worth catching.
+	auto config = TestConfig();
+	config.simpleMode = true;
+	config.simpleClimbHeadroomFrac = 0.20;
+	config.simpleDescendFps = 70.0;
+
+	Harness h{ config, Preset::Quality };
+	h.Run(6.0, 15.0, 5.0);
+
+	REQUIRE_FALSE(h.changes.empty());
+	CHECK(h.changes.front().action == GovernorAction::Descend);
+	CHECK(h.changes.front().target == Preset::Balanced);
+}
+
+TEST_CASE("simple mode holds between the two rules", "[governor][simple]")
+{
+	// 72 fps with only 10% overhead: neither rule applies, so nothing should
+	// happen. Without this a mode that always acts would pass both tests above.
+	auto config = TestConfig();
+	config.simpleMode = true;
+	config.simpleClimbHeadroomFrac = 0.20;
+	config.simpleDescendFps = 70.0;
+
+	Harness h{ config, Preset::Balanced };
+	h.Run(6.0, 13.889, 12.5);
+
+	CHECK(h.changes.empty());
+	REQUIRE_FALSE(h.decisions.empty());
+	CHECK(h.decisions.back().reason.find("hold") != std::string::npos);
+}

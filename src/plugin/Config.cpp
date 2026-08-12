@@ -150,6 +150,10 @@ PluginConfig PluginConfig::Load(const std::filesystem::path& a_path)
 	config.transitionApiCsBuild = ini.GetInt("TransitionApiCsBuild", config.transitionApiCsBuild);
 	config.transitionHoldFrames = ini.GetInt("TransitionHoldFrames", config.transitionHoldFrames);
 	config.maxChangesPerMinute = ini.GetInt("MaxChangesPerMinute", config.maxChangesPerMinute);
+	config.simpleMode = ini.GetBool("SimpleMode", config.simpleMode);
+	config.simpleClimbHeadroomPct =
+		ini.GetDouble("SimpleClimbHeadroomPct", config.simpleClimbHeadroomPct);
+	config.simpleDescendFps = ini.GetDouble("SimpleDescendFps", config.simpleDescendFps);
 	config.targetHz = ini.GetDouble("TargetHz", config.targetHz);
 
 	config.cycler.startDelaySeconds =

@@ -346,8 +346,10 @@ GovernorDecision GovernorCore::Evaluate(double a_nowSeconds, Preset a_current)
 	frames.reserve(_window.size());
 	gpus.reserve(_timedSamples);
 	double gpuSum = 0.0;
+	double frameSum = 0.0;
 	for (const auto& e : _window) {
 		frames.push_back(e.frameMs);
+		frameSum += e.frameMs;
 		if (e.gpuMs > 0.0) {
 			gpus.push_back(e.gpuMs);
 			gpuSum += e.gpuMs;
@@ -362,6 +364,8 @@ GovernorDecision GovernorCore::Evaluate(double a_nowSeconds, Preset a_current)
 	decision.p95FrameMs = Percentile(frames, 95.0);
 	decision.p95GpuMs = gpus.empty() ? 0.0 : Percentile(gpus, 95.0);
 	decision.meanGpuMs = gpus.empty() ? 0.0 : gpuSum / static_cast<double>(gpus.size());
+	decision.meanFrameMs =
+		_window.empty() ? 0.0 : frameSum / static_cast<double>(_window.size());
 	decision.headroomMs = gpus.empty() ? 0.0 : _config.frameBudgetMs - decision.p95GpuMs;
 
 	// D-18: close the measurement opened by the last change, now that the window
@@ -387,9 +391,81 @@ GovernorDecision GovernorCore::Evaluate(double a_nowSeconds, Preset a_current)
 		return decision;
 	}
 
+	if (_config.simpleMode) {
+		return EvaluateSimple(a_nowSeconds, a_current, std::move(decision));
+	}
+
 	return decision.tier == GovernorTier::Headroom ?
 	           EvaluateHeadroom(a_nowSeconds, a_current, std::move(decision)) :
 	           EvaluateFrametime(a_nowSeconds, a_current, std::move(decision));
+}
+
+// Simple mode. An instrument, not a controller.
+//
+// It exists to answer a question no table can: what does "20% overhead" actually
+// look like, one preset higher? So it does exactly what a person reading the
+// readout would do, and nothing else - no landing prediction, no step ratios, no
+// failure memory, no probes.
+//
+// It reads the MEAN, deliberately, because the mean is what the readout prints
+// and therefore what a person forms their intuition from. The rest of the
+// controller decides on P95, and the two disagreed by more than a rung's worth
+// on 2026-08-12. Matching the number on screen is the whole point here: an
+// experiment that acts on a statistic the observer cannot see teaches nothing.
+// It is also why this must never become the shipping controller as written - the
+// mean hides the tail, and the tail is what a locked framerate is lost to.
+GovernorDecision GovernorCore::EvaluateSimple(double a_nowSeconds, Preset a_current,
+	GovernorDecision a_base)
+{
+	auto decision = std::move(a_base);
+	(void)a_nowSeconds;
+
+	const double fps = decision.meanFrameMs > 0.0 ? 1000.0 / decision.meanFrameMs : 0.0;
+
+	// Down first, always. A rule that can climb and descend in the same tick
+	// should descend.
+	if (fps > 0.0 && fps < _config.simpleDescendFps) {
+		if (const auto down = NextDown(a_current)) {
+			decision.action = GovernorAction::Descend;
+			decision.target = *down;
+			decision.reason = Say("simple: %.1f fps below %.1f - down one", fps,
+				_config.simpleDescendFps);
+		} else {
+			decision.reason = Say("simple: %.1f fps below %.1f but already at the cheapest preset",
+				fps, _config.simpleDescendFps);
+		}
+		return decision;
+	}
+
+	// No GPU measurement means no overhead figure, and the whole rule is stated
+	// in terms of one. Hold rather than guess.
+	if (decision.meanGpuMs <= 0.0) {
+		decision.reason = Say("simple: %.1f fps but no GPU measurement to read overhead from", fps);
+		return decision;
+	}
+
+	const double headroomFrac =
+		_config.frameBudgetMs > 0.0 ? 1.0 - decision.meanGpuMs / _config.frameBudgetMs : 0.0;
+
+	if (headroomFrac >= _config.simpleClimbHeadroomFrac) {
+		if (const auto up = NextUp(a_current)) {
+			decision.action = GovernorAction::Climb;
+			decision.target = *up;
+			decision.reason = Say("simple: %.0f%% overhead at or above %.0f%% - up one (%.1f fps, "
+								  "mean GPU %.2f ms)",
+				headroomFrac * 100.0, _config.simpleClimbHeadroomFrac * 100.0, fps,
+				decision.meanGpuMs);
+		} else {
+			decision.reason = Say("simple: %.0f%% overhead but already at maximum quality",
+				headroomFrac * 100.0);
+		}
+		return decision;
+	}
+
+	decision.reason = Say("simple: %.0f%% overhead below %.0f%%, %.1f fps at or above %.1f - hold",
+		headroomFrac * 100.0, _config.simpleClimbHeadroomFrac * 100.0, fps,
+		_config.simpleDescendFps);
+	return decision;
 }
 
 // The time parameter was unnamed until D-20, which needs it: a rung's failure

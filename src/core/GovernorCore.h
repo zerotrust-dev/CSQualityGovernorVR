@@ -59,6 +59,9 @@ struct GovernorDecision
 	double p95GpuMs = 0.0;   // 0 when no GPU time
 	double meanGpuMs = 0.0;  // logged for comparison against external tools
 	double p95FrameMs = 0.0;
+	// Mean over the window. Only simple mode decides on this; everything else
+	// uses the tail, because a locked framerate is lost at the tail.
+	double meanFrameMs = 0.0;
 	double dropRate = 0.0;
 	double headroomMs = 0.0;  // budget - p95Gpu; negative means over budget
 	bool censored = false;
@@ -119,6 +122,23 @@ struct GovernorConfig
 	double climbRetryMarginMs = 0.5;
 	// Beyond this the memory is about somewhere else. Mirrors D-9's T_reset.
 	double climbFailForgetSeconds = 120.0;
+
+	// --- simple mode: an instrument for building intuition, not a controller ---
+	//
+	// "Whenever I see 15-20% overhead I think we are ok to go up one preset" is a
+	// hypothesis that no amount of replay can answer, because what it is really
+	// asking is what the result LOOKS like. So this does exactly that and nothing
+	// else, and the person wearing the headset judges.
+	//
+	// Reads the mean rather than P95 on purpose: the mean is what the readout
+	// prints, so it is what the intuition was formed from. Acting on a statistic
+	// the observer cannot see would answer a different question. That same choice
+	// is why this must not ship as the controller - the mean hides the tail.
+	bool simpleMode = false;
+	// Climb one rung when mean-GPU overhead reaches this fraction of budget.
+	double simpleClimbHeadroomFrac = 0.20;
+	// Descend one rung when windowed mean fps falls below this.
+	double simpleDescendFps = 70.0;
 
 	// Decision window and cadence.
 	double judgeWindowSeconds = 2.0;
@@ -212,6 +232,10 @@ private:
 	// D-20: records whether the climb in flight held or was reversed.
 	void NoteClimbOutcome(Preset a_newPreset, double a_nowSeconds);
 	[[nodiscard]] GovernorDecision Evaluate(double a_nowSeconds, Preset a_current);
+	// The rule as a person would state it: up on overhead, down on fps. See the
+	// definition for why it reads the mean.
+	[[nodiscard]] GovernorDecision EvaluateSimple(double a_nowSeconds, Preset a_current,
+		GovernorDecision a_base);
 	[[nodiscard]] GovernorDecision EvaluateHeadroom(double a_nowSeconds, Preset a_current,
 		GovernorDecision a_base);
 	[[nodiscard]] GovernorDecision EvaluateFrametime(double a_nowSeconds, Preset a_current,

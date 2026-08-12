@@ -519,6 +519,13 @@ struct GpuReadout
 			const double meanGpuMs = gpuMsSum / gpuSamples;
 			// Percentages are formatted by hand: fmt v12 rejects the "%"
 			// presentation type at compile time.
+			//
+			// This is the MEAN, and simple mode acts on exactly this number so
+			// that what is read on screen is what the governor read. The normal
+			// controller decides on P95, which is stricter - the two disagreed
+			// by more than a rung's worth on 2026-08-12, which is how a session
+			// came to be spent asking why 23% of headroom did not produce a
+			// climb.
 			const double headroom = a_budgetMs > 0.0 ? (1.0 - meanGpuMs / a_budgetMs) * 100.0 : 0.0;
 			// E-49: printed only when there is one, so a session on the fork's
 			// timer reads exactly as it did before.
@@ -998,7 +1005,19 @@ void BeginSession()
 	if (g_config.shadowGovernor) {
 		GovernorConfig governorConfig;
 		governorConfig.frameBudgetMs = g_config.cycler.frameBudgetMs;
+		governorConfig.simpleMode = g_config.simpleMode;
+		governorConfig.simpleClimbHeadroomFrac = g_config.simpleClimbHeadroomPct / 100.0;
+		governorConfig.simpleDescendFps = g_config.simpleDescendFps;
 		g_governor = std::make_unique<GovernorCore>(governorConfig);
+
+		if (g_config.simpleMode) {
+			logger::info("SIMPLE MODE: up one preset at {:.0f}% overhead, down one below "
+						 "{:.1f} fps. Mean over a {:.1f}s window, {:.1f}s between changes. "
+						 "This is an instrument for judging what the rungs look like - it has "
+						 "no landing prediction, no failure memory and no tail protection.",
+				g_config.simpleClimbHeadroomPct, g_config.simpleDescendFps,
+				governorConfig.judgeWindowSeconds, governorConfig.cooldownSeconds);
+		}
 
 		if (g_config.writeTimelineCsv && !g_reporter->OpenTimeline()) {
 			logger::warn("could not open timeline CSV; decisions will only reach the log");

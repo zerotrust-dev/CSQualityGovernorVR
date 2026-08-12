@@ -46,6 +46,20 @@ struct PluginConfig
 	// has bitten this project repeatedly, and the cycler owns it until then.
 	bool applyGovernor = false;
 
+	// Simple mode: the rule as a person states it, so a person can judge it.
+	//
+	// "Whenever I see 15-20% overhead I think we are ok to go up one preset" is
+	// not a question replay can answer, because it is really asking what the
+	// result LOOKS like. This does exactly that and nothing else.
+	//
+	// The percentage is read against the MEAN GPU time, which is what the
+	// readout prints - so the number you act on is the number you saw. That is
+	// also why it is an experiment and not a shipping controller: the mean hides
+	// the tail, and a locked framerate is lost at the tail.
+	bool simpleMode = false;
+	double simpleClimbHeadroomPct = 20.0;
+	double simpleDescendFps = 70.0;
+
 	// The Community Shaders build the preset ladder was verified against.
 	//
 	// Presets.h hardcodes each quality mode's resolution scale, copied by hand
