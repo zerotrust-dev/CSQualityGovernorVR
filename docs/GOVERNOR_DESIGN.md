@@ -985,6 +985,122 @@ and this decision is withdrawn rather than tuned.
 **What stays.** The fork continues to exist as the vehicle for the upstream
 patch (D-11a). It is no longer what Rik runs.
 
+### D-26 (PROPOSED) — The climb threshold is the price of the next rung; only the margin is a preference
+
+**Completes D-25 rather than replacing it.** D-25 learns `threshold[R]` from
+outcomes — right, but it has to start somewhere and it converges slowly from a
+bad guess. D-26 says where to start, and reduces the whole user-facing question
+to one number that means the same thing on every rung and every system.
+
+**The observation that produced it.** Asked to name a climb threshold from
+feel, the player said *"whenever I see 15-20% overhead I think we are ok to go up
+one preset"*. Measured on the same machine, stepping out of UltraPerformance
+costs **15.1% of the frame budget**. That is not a coincidence: the number being
+felt was the price of the rung.
+
+The two hand-set values then behaved exactly as that reading predicts (E-57):
+
+- **20%** = rung cost + ~5% margin → the climb is affordable → it settles
+- **14%** = **below** the rung cost → the climb cannot be paid for → it lands
+  over budget, descends, and repeats
+
+14% was not a bad guess about a threshold. It was a bid below the price.
+
+**The rule:**
+
+```
+threshold[R] = cost(R -> R+1) / budget  +  margin
+```
+
+`cost` is measured on the running system; `margin` is the only free parameter.
+
+**Why this is the settings-agnostic form the project has been looking for.** The
+rung cost absorbs *everything* that a user can change — headset resolution,
+Pimax render quality, upscale mode, GPU, driver, scene. Change any of them and
+the measured cost moves with it. The ladder's `Δf` is exact and never moves. The
+threshold therefore re-derives itself, where a shipped percentage cannot: at 90 Hz
+or in Upscale mode, a hardcoded 20% silently means something else.
+
+**And the margin is flat where the threshold is not.** Required headroom varies
+10.4%–30.2% across the ladder (E-51's table, on the corrected fit). The margin on
+top does not. That is what makes a single MCM slider legitimate rather than a
+number that happens to suit one rung — and D-25's decay means a wrong margin is
+corrected by experience instead of persisting.
+
+**Measuring the cost without a model.** The sweep already visits all seven
+presets, so `cost = p95[R+1] − p95[R]` is a direct subtraction — no `scale²`, no
+fit, nothing D-24 was rejected for. The fitted `B × Δf` form is available as a
+smoother alternative, but **it must not be load-bearing**: D-24's rejection
+stands, and this proposal deliberately does not depend on it.
+
+**Stated plainly: the cost itself is uncertain.** The same rung has measured
+**1.29, 1.243 and 1.146** across three sessions, and the two measurement routes
+disagree — direct subtraction gives ~12.3% where the fit gives 15.1%. So the
+margin is not decoration; it absorbs real variance in the quantity it sits on
+top of. A margin smaller than that spread will hunt, which is what 14%
+demonstrated.
+
+**Proposed starting values:** `margin = 5%` of budget, measured per session,
+falling back to a shipped conservative constant when no sweep ran. On this
+machine that yields 17–20% at the bottom rung, and the player's hand-chosen 20%
+sits at the top of that range.
+
+**What the MCM exposes.** The margin, never the threshold. It is a genuine
+preference — *how much safety before I spend quality* — it means the same thing
+on every rung and every system, and unlike a raw threshold it cannot be set to a
+value that guarantees hunting, because the price is added for you.
+
+So the number the player saw as "20%" is two things that should never have been
+one:
+
+```
+    20%        =        15.1%              +        ~5%
+  what the           measured, per rung,          the MCM slider
+  player set         per session, hidden          the player owns
+```
+
+**Hidden from the control surface is not hidden from the log.** D-12 requires a
+session to be reconstructible from its artifacts, so the measured cost, the
+margin and the resulting threshold all go to the timeline and the decision
+reason — a hold that says *"18% overhead, need 20% (rung costs 15.1% + 5% margin)"*
+explains itself. What the player must not be given is a knob whose correct value
+depends on which rung they happen to be on and what resolution they are running:
+that is the knob that produced 14%, and 14% was a bid below the asking price.
+
+#### D-26's pre-registered test
+
+The refutation condition is the configuration change already planned, because
+that is the one claim this proposal makes that a same-config session cannot test.
+
+**Run the same route at 72 Hz native and at Pimax 72 Hz Upscale (Lab), with the
+margin untouched.** The formula's entire justification is that it re-derives the
+threshold when the configuration changes.
+
+- **Passes** if the late-frame rate and preset distribution stay comparable
+  across the two configurations *without* the margin being retuned.
+- **Fails** if the margin has to be changed by hand to get sane behaviour after
+  the switch — in which case the rung cost is not absorbing what it claims to,
+  and the honest answer is the MCM threshold the player originally proposed.
+
+Also required, and fixed now: dedup by `gpu_frame` (Rule 8); per-visit
+segmentation by `(sweep, index)` (Rule 10); nearest-rank P95; late frames counted
+as `frame_ms > budget × 1.05` **with the budget derived from measured refresh**,
+not assumed — E-56 makes that available.
+
+**Report the tail, not the mean.** E-57: 20% and 14% differ 4× in late frames but
+**78×** in the 20–27.8 ms band and **15×** beyond two display periods. A
+comparison that reports only "late %" would have called those two settings much
+closer than they are.
+
+**Cost if wrong.** If the measured cost is too high, the controller under-climbs
+and loses quality — the safe direction, and D-25's decay eventually corrects it.
+If too low, it over-climbs and hunts, which is 14%'s behaviour and self-evident
+within a minute of play.
+
+**What it does not fix.** Nothing here addresses E-49. Frames still arrive late
+while GPU time reports room, both candidate explanations died in E-55 and E-56,
+and this proposal simply steers on the outcome instead of the cause.
+
 ### D-25 (PROPOSED) — Climb on measured outcome, not predicted cost: an adaptive per-rung threshold
 
 **Challenges D-18**, by removing the cost table from the decision path entirely,
@@ -2084,6 +2200,7 @@ includes questions about somebody else's instrument.
 
 ## 8. Open Questions
 
+| E-57 | **A hand-chosen climb threshold turned out to be the price of a rung, and the setting below that price hunts.** Asked to name a threshold from feel, the player said *"whenever I see 15-20% overhead I think we are ok to go up one preset"*. The measured cost of stepping out of UltraPerformance is **15.1% of the frame budget**. Three governed sessions, same machine, same day: **old controller** UltraPerformance **78-86%**, pixel fraction 0.151, late 2.4%; **simple mode at 20%** (= rung cost + 5% margin) UltraPerformance **10.7%**, Performance 72.2%, pixel fraction **0.256** (+70%), late 5.2%; **simple mode at 14%** (below the rung cost) UltraPerformance 10.5-13.8%, Performance 57.5-70.9%, pixel fraction 0.271 (+6% over 20%), late **15.0% and 20.2%**. So the threshold that sits below the price of the rung does not hold the higher rung better - it reaches and bounces, 75 changes in 7 minutes against 20 in 5.4, hitting the 3 s cooldown floor. **The tail is where the two settings really differ.** Late frames are 4x apart, but broken down: at 20% **99%** of them are marginal (14.7-20 ms) and only **0.03%** exceed two display periods - one every 46 seconds. At 14%, **2.34%** land in 20-27.8 ms (**78x** more) and **0.45%** exceed two display periods (**15x** more) - one every 3.1 seconds. A comparison reporting only "late %" would have called these settings far closer than they are. **Also: what drives the player into UltraPerformance is the descend rule, not the climb threshold** - both settings escape the old controller's 78-86% equally, so lowering the climb bar buys tail risk without buying floor. | Sessions `rc3-2026-08-12-2136`, `rc3-2026-08-12-2154`, `rc3-2026-08-13-1337` |
 | E-56 | **The display is exactly 72.000 Hz, our struct layout is proven correct, and the compositor field is even less useful than E-55 said.** Session 2026-08-13 13:37, 24576 fresh rows, first capture with all three `ft_*` timing columns. **`m_flPreSubmitGpuMs` reads 9722 µs on every single row** — OpenComposite's own D3D11 timer is not running here, so the field is its `displayPeriod × 0.7` fallback. Two consequences beat the cross-check that was lost: reading a documented formula to the microsecond **proves our struct offsets are right**, so every `ft_*` value is the field it claims to be; and `9722 / 0.7` recovers `predictedDisplayPeriodMs` = **13.8886 ms = 72.000 Hz**, from the runtime's own prediction. Our frame timing is quantised to 1/6 ms and cannot separate 72 from 71.4 Hz, so this constant is the better refresh source — and it is what `PROPOSED_SAFE_LADDER_GOVERNOR.md` §4.2 asks for. **E-55's prediction about the compositor field was wrong**, and the correction makes it a stronger negative: predicted large-on-fast-frames, measured **7.08 ms on fast frames against 7.74 on slow** — flat. Cause: `appGpu` is assigned only under the same `gpuTimingInitialized` flag that makes preSubmit a constant, so it is 0, and `frameInterval` is the constant display period. The residual collapses to `displayPeriod − CPU times`, containing **no GPU term at all**. `m_flClientFrameIntervalMs` is the application's measured pace (median 14.12 ms, p95 20.64), not the display period. | Session `rc3-2026-08-13-1337`; `OPENCOMPOSITE_FRAME_TIMING.md` §2a |
 | E-55 | **The compositor-GPU lead is dead: that field is a residual, not a measurement — and the source that settles it is not the one on `master`.** MGO 4.0 beta RC3 ships OpenComposite Unleashed **Nexus 171182 v4.2.3**, file-dated 2026-08-07, which matches the repo's **`Unstable` branch tip exactly**. `master` is six months stale (last commit 2026-02-22) and hardcodes every field — reasoning from it would have been wrong twice over. In the shipping source, `m_flCompositorRenderGpuMs` is computed as `residual = frameInterval − cpuFrame − appGpu − endFrame`, clamped to `[0, frameInterval]`: **leftover frame time, idle included.** It is *large when the application was fast*, which is exactly the backwards correlation flagged before the session — 10.51 ms against a 12.74 ms interval, 1.39 ms against 26.99 ms. The 1.39 ms readings are its other branch, `displayPeriod × 0.1` = 1.389 ms at 72 Hz. So there is no hidden compositor GPU cost here and E-49 remains unexplained. **Two genuine gains survive.** `m_flPreSubmitGpuMs` carries OpenComposite's **own D3D11 timestamp queries** of application GPU time (rejected above 200 ms, falling back to `displayPeriod × 0.7`) — an independent instrument measuring what D-21 measures, on the same GPU. And `m_flClientFrameIntervalMs` is a real measured frame interval falling back to OpenXR's `predictedDisplayPeriod`, so it can resolve 72 Hz from 71.4 Hz where our own timing cannot, being quantised to 1/6 ms. **E-53 also gains its mechanism:** `m_nNumDroppedFrames` is real only when `ovrPerf.available`, an Oculus performance API, so on Pimax/OpenXR it is structurally 0 — not an oversight, a different vendor's hook. | `OPENCOMPOSITE_FRAME_TIMING.md` — field-by-field reference, kept as the source of truth for every `ft_*` column |
 | E-54 | **From UltraPerformance the governor cannot climb at all, and this was demonstrated deliberately rather than inferred.** The player stood still, let calibration finish, then set NativeAA from the Community Shaders menu and let the governor walk down to Performance; then set UltraPerformance by hand and waited. It never climbed back, without moving or turning. The log gives the mechanism as two gates in series, alternating: `hold: p95 GPU 11.39 ms inside the band [11.39, 13.89]` and `hold: 2.52 ms spare but one rung would land past 12.89 ms`. P95 GPU at UltraPerformance sits at **11.20–11.57 ms** against a climb threshold of 11.389, so when it is above, the band holds; when it dips below, the landing check computes `11.2 × 1.243 = 13.93` against a 12.89 ms limit and refuses. **Escape requires P95 GPU ≤ 10.37 ms, which this scene never reaches** — so the rung is unreachable regardless of how favourable conditions become, and standing perfectly still cannot help. This is the self-confirming seed of E-52 shown as a closed loop rather than argued: the rung can only be learned by climbing it, and the seed is what forbids the climb. It is the exact failure D-25's decaying threshold exists to break. | Session 2026-08-12 20:55, deliberate manual-preset test |
