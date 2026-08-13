@@ -102,3 +102,72 @@ and directly serves the use case the API was built for.
 - A GPU-timing patch, already written and validated (`frame-gpu-time.md`), if
   timing is wanted in the API — though our own hooks now make that optional for
   us, and it may be more useful to you than to us.
+
+---
+
+## Update 2026-08-13 — the diagnosis is confirmed in source, and there is a workaround
+
+This draft asked for pre-allocation plus a sub-rect instead of a relatch. That
+request is now backed by the source and by measurement, and an independent review
+(Codex) arrived at the same architecture in far more detail — it calls it
+**Hot-Envelope Render Scale Mode**: keep Skyrim's physical render targets at one
+immutable allocation size, and switch quality by changing only the *logical*
+rendering extent inside them via the dynamic-resolution ratios.
+
+### What the source proves
+
+`Features/Upscaling/PerfMode.cpp`:
+
+```cpp
+restartRequired =
+    boot.active &&
+    (!requestedNow || displaySizeChanged || !eligibleNow ||
+     boot.method != a_method ||
+     boot.qualityMode != qualityMode);   // a quality change relatches
+```
+
+Because VR Render Scale Mode replaces the runtime's recommended render-target
+size with `HMD size x quality scale`, Skyrim allocates its physical targets at
+that quality's input resolution. Changing quality therefore changes physical
+texture dimensions, which cascades into `RecreateRenderTargetsForVRRenderScale`,
+`globals::ReInit()`, and a rebuild of every render-target-dependent feature. The
+stall is a rendering-graph reconstruction, not an upscaler switch.
+
+The single line to change is `boot.qualityMode != qualityMode`. Quality must
+become hot state; only display size, method, render-scale mode and the
+*allocation* scale should remain cold.
+
+### There is a workaround today, and it should shape the ask
+
+Booting with **VR Render Scale Mode disabled** already avoids this entirely:
+`EnsureBootLatch` returns before arming the latch when `IsEligible` is false, so
+`restartRequired` can never be set by a quality change. Measured on RC3, worst
+frame within 0.5 s of a change fell from **59 ms to 34 ms**, with late frames per
+preset and preset distribution unchanged.
+
+So the honest framing for the author is not "the freeze makes external control
+impossible" — it is:
+
+> External VR quality control already works, but only by giving up Render Scale
+> Mode's allocation savings. Hot-Envelope would give both.
+
+### Two things to check before proposing an implementation
+
+1. **DLSS dynamic-resolution range.** The ladder spans scale 0.333 to 1.0, a 3x
+   linear span. Streamline defines a valid input range per output resolution via
+   `slDLSSGetOptimalSettings`. CSX resolves that entry point but does not appear
+   to use the returned min/max anywhere. If the range is narrower than the ladder,
+   "all seven levels hot" is impossible and the envelope must be chosen to fit.
+   **This is the most likely failure of the whole idea and costs nothing to
+   check.**
+2. **The VR DLSS viewport slot cache** holds two slots per role, keyed on quality
+   mode plus preset (`Upscaling/Streamline.cpp`). Cycling seven rungs will evict
+   and recreate. Once the relatch is gone this is the next candidate hitch, and
+   re-keying on performance mode + preset + output dimensions + HDR state would
+   let qualities that share a DLSS mode share a context.
+
+### Provenance
+
+The public `csx-3-VR` head declares API build 10; RC3 ships build 11. The relatch
+path matches, but any patch should be based on the exact source for the installed
+binary, identified by build artifact or PDB rather than by nearest public head.
