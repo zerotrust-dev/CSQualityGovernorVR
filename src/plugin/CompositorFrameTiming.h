@@ -93,19 +93,21 @@ struct Reading
 	std::uint32_t reprojectionFlags = 0;
 	float clientFrameIntervalMs = 0.0f;
 	float compositorRenderGpuMs = 0.0f;
-	// Alignment canary. OpenComposite Unleashed's public source assigns this a
-	// literal 8.0f ("sensible values until GPU timers implemented"). So:
+	// OpenComposite's OWN D3D11 GPU timer for the application's frame.
 	//
-	//   reads exactly 8.0  -> our offsets are correct AND the build hardcodes,
-	//                         which means every other field here is a constant
-	//                         and none of them is worth reading.
-	//   reads varying      -> the shipped build has real timers, and the
-	//                         compositor figures are genuine measurements.
-	//   reads nonsense     -> our struct layout does not match theirs and we
-	//                         have been reading the wrong bytes all along.
+	// Read from the source that actually ships with MGO 4.0 beta RC3 - Nexus
+	// 171182 v4.2.3, whose file date matches the `Unstable` branch tip exactly.
+	// That branch is nothing like `master`, which is six months stale and
+	// hardcodes every field; do not reason about this struct from `master`.
 	//
-	// One known constant at a known offset separates three explanations that
-	// otherwise need a whole session each to tell apart.
+	//   m_flPreSubmitGpuMs = measuredGpuTimeMs        (real timestamp queries,
+	//                                                  rejected if >200 ms)
+	//              fallback: displayPeriod * 0.7      (= 9.72 ms at 72 Hz)
+	//
+	// So this is an INDEPENDENT measurement of the same quantity our own D3D11
+	// brackets measure. That makes it a cross-check on D-21 rather than an
+	// alignment canary - and a disagreement between two timers watching one GPU
+	// is worth more than either number alone.
 	float preSubmitGpuMs = 0.0f;
 };
 

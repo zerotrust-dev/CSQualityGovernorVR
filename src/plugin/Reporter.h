@@ -23,18 +23,22 @@ struct FrameDelivery
 	std::uint32_t dropped = 0;
 	std::uint32_t misPresented = 0;
 	std::uint32_t reprojectionFlags = 0;
-	// The two fields OpenComposite DOES populate (E-53). Microseconds, so the
-	// column is an integer like every other timing column here.
+	// Microseconds, so the column is an integer like every other timing column.
 	//
-	// compositorGpuUs is the lead worth following: it reads 4-7 ms, which is
-	// GPU work outside our WaitGetPoses->Submit bracket, and E-49 is still
-	// looking for exactly that. intervalUs is the runtime's own measurement of
-	// the frame period - a better basis for deriving refresh than our own
-	// timing, which is quantised to 1/6 ms.
+	// intervalUs = OpenComposite's measuredFrameIntervalMs, falling back to
+	// OpenXR's predictedDisplayPeriod. A real measured period, and not
+	// quantised to 1/6 ms as ours is - so it can resolve 72 Hz from 71.4 Hz,
+	// which ours cannot.
 	std::uint32_t intervalUs = 0;
+	// compositorGpuUs is NOT compositor GPU cost, despite the field name.
+	// The shipping source computes it as
+	//     residual = frameInterval - cpuFrame - appGpu - endFrame
+	// clamped to [0, frameInterval]. That is leftover frame time, idle
+	// included: it is LARGE when the application was fast. Recorded to confirm
+	// that shape, not because it measures the compositor (E-55).
 	std::uint32_t compositorGpuUs = 0;
-	// Alignment canary - see CompositorFrameTiming.h. Public source assigns a
-	// literal 8.0 ms here.
+	// OpenComposite's own D3D11 timer for app GPU time - an independent
+	// measurement of what D-21 measures, so a cross-check rather than a canary.
 	std::uint32_t preSubmitGpuUs = 0;
 };
 
