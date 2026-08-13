@@ -93,6 +93,20 @@ struct Reading
 	std::uint32_t reprojectionFlags = 0;
 	float clientFrameIntervalMs = 0.0f;
 	float compositorRenderGpuMs = 0.0f;
+	// Alignment canary. OpenComposite Unleashed's public source assigns this a
+	// literal 8.0f ("sensible values until GPU timers implemented"). So:
+	//
+	//   reads exactly 8.0  -> our offsets are correct AND the build hardcodes,
+	//                         which means every other field here is a constant
+	//                         and none of them is worth reading.
+	//   reads varying      -> the shipped build has real timers, and the
+	//                         compositor figures are genuine measurements.
+	//   reads nonsense     -> our struct layout does not match theirs and we
+	//                         have been reading the wrong bytes all along.
+	//
+	// One known constant at a known offset separates three explanations that
+	// otherwise need a whole session each to tell apart.
+	float preSubmitGpuMs = 0.0f;
 };
 
 // Called once per frame from the WaitGetPoses hook, where the previous frame's

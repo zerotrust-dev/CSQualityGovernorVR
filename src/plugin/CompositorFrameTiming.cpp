@@ -90,6 +90,7 @@ bool g_reportedFatal = false;
 std::atomic<std::uint32_t> g_lastReportedIndex{ 0 };
 std::atomic<float> g_lastInterval{ 0.0f };
 std::atomic<float> g_lastCompositorGpuMs{ 0.0f };
+std::atomic<float> g_lastPreSubmitGpuMs{ 0.0f };
 
 void Note(std::atomic_bool& a_flag, bool a_changed) noexcept
 {
@@ -143,6 +144,7 @@ void Poll(void* a_compositor)
 	reading.reprojectionFlags = timing.m_nReprojectionFlags;
 	reading.clientFrameIntervalMs = timing.m_flClientFrameIntervalMs;
 	reading.compositorRenderGpuMs = timing.m_flCompositorRenderGpuMs;
+	reading.preSubmitGpuMs = timing.m_flPreSubmitGpuMs;
 
 	if (g_haveLastFrameIndex && timing.m_nFrameIndex != g_lastFrameIndex) {
 		reading.fresh = true;
@@ -189,6 +191,7 @@ void Poll(void* a_compositor)
 	g_lastReportedIndex.store(reading.frameIndex, std::memory_order_relaxed);
 	g_lastInterval.store(reading.clientFrameIntervalMs, std::memory_order_relaxed);
 	g_lastCompositorGpuMs.store(reading.compositorRenderGpuMs, std::memory_order_relaxed);
+	g_lastPreSubmitGpuMs.store(reading.preSubmitGpuMs, std::memory_order_relaxed);
 	g_packedLast.store(Pack(reading), std::memory_order_relaxed);
 }
 
@@ -212,6 +215,7 @@ Reading Last() noexcept
 	r.frameIndex = g_lastReportedIndex.load(std::memory_order_relaxed);
 	r.clientFrameIntervalMs = g_lastInterval.load(std::memory_order_relaxed);
 	r.compositorRenderGpuMs = g_lastCompositorGpuMs.load(std::memory_order_relaxed);
+	r.preSubmitGpuMs = g_lastPreSubmitGpuMs.load(std::memory_order_relaxed);
 	return r;
 }
 

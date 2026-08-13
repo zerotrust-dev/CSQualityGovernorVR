@@ -33,6 +33,9 @@ struct FrameDelivery
 	// timing, which is quantised to 1/6 ms.
 	std::uint32_t intervalUs = 0;
 	std::uint32_t compositorGpuUs = 0;
+	// Alignment canary - see CompositorFrameTiming.h. Public source assigns a
+	// literal 8.0 ms here.
+	std::uint32_t preSubmitGpuUs = 0;
 };
 
 // Writes the cold numbers. The point of the cycler is that one game session

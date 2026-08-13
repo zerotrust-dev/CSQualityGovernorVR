@@ -917,7 +917,7 @@ void OnFrame(double a_now, double a_frameTimeMs)
 			g_ownGpuTimer ? CompositorTimer::LastFramePostSubmitUs() : 0,
 			FrameDelivery{ ft.fresh, ft.presents, ft.dropped, ft.misPresented,
 				ft.reprojectionFlags, toUs(ft.clientFrameIntervalMs),
-				toUs(ft.compositorRenderGpuMs) });
+				toUs(ft.compositorRenderGpuMs), toUs(ft.preSubmitGpuMs) });
 	}
 
 	g_readout.Add(a_now, a_frameTimeMs, gpuUs, gpuFrame, g_config.cycler.frameBudgetMs,
