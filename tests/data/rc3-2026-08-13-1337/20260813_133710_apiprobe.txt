@@ -1,0 +1,22 @@
+===== Community Shaders API probe =====
+  revision requested : 4
+  revision acquired  : 4
+  build number       : 11
+  ---------------------------------------------------------------
+  getBuildNumber                         11
+  GetUpscalePreset                       6 (UltraQuality)
+  GetUpscaleMethod                       3 (DLSS)
+  GetDLSSProfile                         1 (K)
+  GetRenderAtUpscaleResEnabled           true
+  GetRenderAtUpscaleResActive            false
+  GetVRUpscalingApplyBlockReasons        0x4 (LoadingMenu)
+  IsVRUpscalingProfileApplyAllowed       false
+                                           note: not allowed right now - may simply be a loading screen
+  GetLastFrameGpuTimeUs                  <not available>
+                                           note: provider is revision 4 build 11; GPU timing needs revision 4 and build EXACTLY 9 (the forked Community Shaders, as set by VerifiedCsBuild). Running on the frametime tier, which is censored at the compositor cap, so climbs are blind probes.
+  GetSSSEnabled                          true
+  GetSSGIEnabled                         false
+  GetVolumetricLightingExteriorEnabled   true
+  GetLightLimitFixContactShadowsEnabled  false
+  verdict: all getters responded plausibly
+=======================================

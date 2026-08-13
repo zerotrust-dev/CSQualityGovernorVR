@@ -90,6 +90,64 @@ application's own frame interval.
 
 ---
 
+## 2a. Measured 2026-08-13 — and it corrects section 2
+
+Session `20260813_133710`, 24576 fresh rows. Reading the source got two of three
+predictions right and one wrong.
+
+### `m_flPreSubmitGpuMs` is a constant here: **9722 µs on every single row**
+
+OpenComposite's D3D11 timer is **not running** on this system, so the field falls
+back to `displayPeriod × 0.7`. There is no second GPU timer to cross-check D-21
+against. Two things follow, and both are worth more than the cross-check would
+have been:
+
+- **Our struct layout is proven correct.** Reading exactly the documented
+  fallback formula, to the microsecond, is not something misaligned bytes do.
+  Every other `ft_*` reading is therefore trustworthy as *the field it claims to
+  be*.
+- **The display period is exactly 13.8886 ms — 72.000 Hz.** `9722 / 0.7`
+  recovers `predictedDisplayPeriodMs`, the runtime's own figure. That settles a
+  question our own timing could not: our frame times are quantised to 1/6 ms and
+  cannot separate 72 Hz from 71.4 Hz. **This constant is a better refresh source
+  than the interval field**, because it is derived from the runtime's prediction
+  rather than from observed pacing.
+
+### `m_flCompositorRenderGpuMs` — the prediction in section 2 was wrong
+
+Section 2 said it should be *large when the application was fast*. Measured:
+
+```
+fast frames (<13.0 ms): mean 7.08 ms
+slow frames (>16.0 ms): mean 7.74 ms
+```
+
+Flat, and marginally the other way. The reason is in the same source, missed on
+first read: `appGpu` is only assigned when `gpuTimingInitialized && measuredGpuTimeMs > 0`
+— the *same* condition that makes `m_flPreSubmitGpuMs` a constant. With their
+timer off, `appGpu` is **0**, and `frameInterval` is `predictedDisplayPeriodMs`,
+also constant. So the residual collapses to
+
+```
+residual ≈ displayPeriod − measuredCpuFrameMs − measuredEndFrameMs
+```
+
+which contains **no GPU term at all**. It is a CPU-side residual of a constant,
+sitting near 7 ms and carrying no load information. It is not a delivery signal,
+not a cost, and not usable — a stronger negative than section 2 claimed, arrived
+at for a different reason.
+
+*(Loosely, it implies CPU-side frame work near 6.8 ms. Recorded as an
+observation only: the semantics of `measuredCpuFrameMs` have not been verified,
+and nothing should be built on it without reading that path.)*
+
+### `m_flClientFrameIntervalMs` is the app's pace, not the display's
+
+Median **14.12 ms**, p05 12.24, p95 20.64 — a wide spread, because it is
+`measuredFrameIntervalMs`: the real interval between frames, late ones included.
+Useful as a delivery observation; **not** the display period. Use the
+`preSubmitGpuMs / 0.7` route above for that.
+
 ## 3. Consequences for this plugin
 
 - **`ft_compositor_gpu_us` is recorded to confirm the residual shape, not as a
