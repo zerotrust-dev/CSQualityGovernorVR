@@ -23,6 +23,16 @@ struct FrameDelivery
 	std::uint32_t dropped = 0;
 	std::uint32_t misPresented = 0;
 	std::uint32_t reprojectionFlags = 0;
+	// The two fields OpenComposite DOES populate (E-53). Microseconds, so the
+	// column is an integer like every other timing column here.
+	//
+	// compositorGpuUs is the lead worth following: it reads 4-7 ms, which is
+	// GPU work outside our WaitGetPoses->Submit bracket, and E-49 is still
+	// looking for exactly that. intervalUs is the runtime's own measurement of
+	// the frame period - a better basis for deriving refresh than our own
+	// timing, which is quantised to 1/6 ms.
+	std::uint32_t intervalUs = 0;
+	std::uint32_t compositorGpuUs = 0;
 };
 
 // Writes the cold numbers. The point of the cycler is that one game session

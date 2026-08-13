@@ -903,11 +903,21 @@ void OnFrame(double a_now, double a_frameTimeMs)
 		// timer has no such reading, and a column of zeros from a session that
 		// could not measure it is honest.
 		const auto ft = FrameTiming::Last();
+		// Guarded: a negative or absurd float from a field the runtime may not
+		// populate must not become a huge unsigned number. Casting a negative
+		// float to an unsigned integer is undefined behaviour, not a wrap.
+		const auto toUs = [](float a_ms) -> std::uint32_t {
+			if (!(a_ms > 0.0f) || a_ms > 1000.0f) {
+				return 0;
+			}
+			return static_cast<std::uint32_t>(a_ms * 1000.0f);
+		};
 		g_reporter->WriteFrame(WallClockMs(), a_now, a_frameTimeMs, info ? info->publicValue : 0,
 			state, gpuUs, gpuFrame,
 			g_ownGpuTimer ? CompositorTimer::LastFramePostSubmitUs() : 0,
 			FrameDelivery{ ft.fresh, ft.presents, ft.dropped, ft.misPresented,
-				ft.reprojectionFlags });
+				ft.reprojectionFlags, toUs(ft.clientFrameIntervalMs),
+				toUs(ft.compositorRenderGpuMs) });
 	}
 
 	g_readout.Add(a_now, a_frameTimeMs, gpuUs, gpuFrame, g_config.cycler.frameBudgetMs,

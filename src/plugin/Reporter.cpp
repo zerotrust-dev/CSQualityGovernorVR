@@ -64,7 +64,8 @@ bool Reporter::OpenFrames()
 	// fields move" but "do they move on the frames that were actually late" -
 	// and that can only be answered by joining them to frame_ms row by row.
 	_frames << "wall_ms,time_s,frame_ms,preset_public,state,gpu_us,gpu_frame,post_submit_us,"
-			   "ft_fresh,ft_presents,ft_dropped,ft_mispresented,ft_reproj\n";
+			   "ft_fresh,ft_presents,ft_dropped,ft_mispresented,ft_reproj,"
+			   "ft_interval_us,ft_compositor_gpu_us\n";
 	return true;
 }
 
@@ -168,7 +169,8 @@ void Reporter::WriteFrame(std::uint64_t a_wallMs, double a_time, double a_frameT
 			<< a_frameTimeMs << ',' << a_presetPublicValue << ',' << a_state << ',' << a_gpuTimeUs
 			<< ',' << a_gpuFrameIndex << ',' << a_postSubmitUs << ',' << (a_delivery.fresh ? 1 : 0)
 			<< ',' << a_delivery.presents << ',' << a_delivery.dropped << ','
-			<< a_delivery.misPresented << ',' << a_delivery.reprojectionFlags << '\n';
+			<< a_delivery.misPresented << ',' << a_delivery.reprojectionFlags << ','
+			<< a_delivery.intervalUs << ',' << a_delivery.compositorGpuUs << '\n';
 }
 
 void Reporter::Finish(const std::vector<TransitionRecord>& a_records, double a_budgetMs)
