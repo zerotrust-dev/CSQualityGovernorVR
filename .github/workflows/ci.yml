@@ -3,6 +3,22 @@ name: CI
 on:
   push:
     branches: [main]
+    # Documentation and archived captures do not change what gets built, and on
+    # 2026-08-13 they accounted for 6 of the previous 15 pushes - 40% of the
+    # month's Actions minutes spent rebuilding an unchanged binary. This repo is
+    # private, so those minutes are metered, and the quota ran out mid-session.
+    #
+    # A push touching BOTH docs and code still builds: paths-ignore only skips
+    # when every changed file matches.
+    #
+    # CAVEAT: the replay step reads fixtures from tests/data. Adding one is
+    # additive and safe to skip, but if you ever MODIFY a fixture the workflow
+    # already replays, run the workflow by hand - the replay output would have
+    # changed and nothing here would tell you.
+    paths-ignore:
+      - 'docs/**'
+      - 'tests/data/**'
+      - '**/*.md'
   pull_request:
   workflow_dispatch:
 
