@@ -193,3 +193,55 @@ Stated as measurements so it is not a judgement call:
 - a recorded decision on whether we ship with the actuator enabled. The ini
   still says "ship as 0", written before it worked, and that has not been
   revisited.
+
+## Standing re-check each RC: is VR Render Scale Mode worth turning back on?
+
+**A recurring question, not a settled one.** CS ships a new build with each RC,
+and the feature is marked *"Experimental. Can provide a strong performance boost,
+but it is not fully tested in all situations."* Measured on CSX 3.18-VR it gave
+**nothing detectable** in our operating range — but the mechanism is sound and the
+feature is under active development, so a later build may deliver what the
+tooltip claims. Do not treat 2026-08-13's answer as permanent.
+
+**What it does, so the check is understood rather than copied.** With it on, CS
+replaces Skyrim's recommended render-target size with `HMD size x quality scale`
+(`renderEyeWidth * 2` for the double-wide target), so the engine physically
+allocates smaller textures. Every pass then works on less memory — *including the
+ones that ignore CS's dynamic-resolution ratio*, which with the feature off still
+run at full size. The prize is exactly the cost of those ratio-ignoring passes.
+
+**The price** is that quality becomes a cold setting: `qualityModeMatches` feeds
+`restartRequired`, so every governor change forces a full render-target
+recreation (~85 ms) instead of a ~42 ms artefact hold (E-58, E-59).
+
+### The test, and it must be run standing still
+
+1. CS menu -> Render Pipeline -> VR Render Scale Mode -> **Disabled**, then
+   **restart** so no boot latch is created.
+2. Load a save, **stand still**, and **close the CS menu** — CS refuses preset
+   changes while its own menu is open, which leaves the sweep stuck in `Starting`
+   and silently produces a capture with no sweep in it. That cost two of four
+   runs on 2026-08-13.
+3. Let both sweeps finish (~4 min). Quit.
+4. Enable it, restart, **same save, same spot**, repeat.
+
+Analysis: dedup by `gpu_frame` (Rule 8), segment by `(sweep, index)` (Rule 10),
+nearest-rank P95, equal weight per visit.
+
+**Use NativeAA as the control.** At scale 1.0 the feature cannot do anything, so
+its measured difference *is* the noise floor. On 2026-08-13 that was **0.88 ms**,
+and every apparent saving below it was uninterpretable.
+
+### Reopen the prototype when
+
+The saving at **Performance and UltraPerformance** — where ~90% of play happens —
+clears the NativeAA control by a decent margin, say **>1.0 ms**. Then the
+hot-envelope patch is worth building: boot-latch at the highest useful rung and
+allow downward quality changes without a relatch, using
+`ApplyDynamicResolutionState` with ratio `activeScale / bootScale` instead of
+`ApplyLockedFullResolutionDynamicResolutionState`. Both functions already exist
+in CSX, so this is combining existing machinery rather than new rendering.
+
+**Tighten the measurement next time.** A 0.88 ms floor from a single
+cross-session pair is too coarse to see a plausible gain. Run `Sweeps = 4`, and
+if the answer still matters, repeat the pair to average out session drift.
