@@ -74,6 +74,14 @@ the upstream PR alongside the timer.
 
 Repeat unchanged for each candidate.
 
+0a. **Re-verify OpenComposite too, not just CS.** A mod list can ship a
+   different OpenComposite build without a single line of our code or logs
+   changing, and every `ft_*` column's meaning depends on which one it is.
+   `OPENCOMPOSITE_FRAME_TIMING.md` §4 is the checklist; the trap it exists to
+   prevent is reading the wrong branch — RC3's shipping source was `Unstable`,
+   while `master` was six months stale and hardcoded every field, which is
+   wrong in a way that looks plausible.
+
 0. **Read the CS source before touching anything.** Not the release notes — the
    source, on the branch that RC ships. Three files answer almost everything:
    the VR API header (what the interface now offers), `Upscaling.h`'s
