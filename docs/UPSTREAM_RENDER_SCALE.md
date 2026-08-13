@@ -171,3 +171,48 @@ impossible" — it is:
 The public `csx-3-VR` head declares API build 10; RC3 ships build 11. The relatch
 path matches, but any patch should be based on the exact source for the installed
 binary, identified by build artifact or PDB rather than by nearest public head.
+
+---
+
+## Second, smaller ask: a ~3-frame hidden-area-mask artefact on preset change
+
+Independent of the render-scale architecture, and much cheaper to fix.
+
+**What is seen.** On every VR upscale preset change, a rectangle appears in the
+**nose region of both eyes** — white in the right eye, empty in the left. It
+**starts wide, extending toward the edges, and contracts to the nose over about
+three frames** before disappearing. The nose is exactly what the hidden area mask
+covers.
+
+**How the length was established.** An external controller (this plugin) conceals
+transitions by replaying the last known-good submitted frame for N frames. Binary
+searching N against what a player can actually see:
+
+| N | result |
+|---|---|
+| 8 | clean |
+| 3 | clean |
+| 2 | nose rectangle visible |
+| 1 | nose rectangle visible |
+| 0 | **widest** — extends to the edges |
+
+**It is not the controller's doing.** Setting N = 0 removes the capture and
+replay entirely, and the artefact becomes *worse*, not better. So this is
+produced by Community Shaders' own transition path and merely papered over
+downstream.
+
+**Build.** CSX **3.18-VR**, archive dated **2026-08-09**, on MGO 4.0 beta RC3,
+Pimax Crystal Super, 72 Hz. Applied through
+`SetVRUpscalingTransitionProfileForMethod` — i.e. the documented transition API
+with the door fade, not `SetUpscalePreset` underneath the renderer. Reproduced
+with **VR Render Scale Mode disabled**, so no render-target relatch is involved.
+
+Note this appears to survive the 2026-07-25 upstream flash fix, which predates
+this build by three weeks — so either that fix does not cover this path, or this
+is a distinct artefact with a similar appearance.
+
+**Why it matters to an external controller.** It sets a hard floor on how short
+a transition can be made. Every quality change costs at least three frames of
+deliberately frozen image to hide it — about 42 ms at 72 Hz. Remove the artefact
+and the concealment can go away entirely, which is the difference between a
+governor that can change quality freely and one that must ration changes.
