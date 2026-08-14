@@ -60,6 +60,19 @@ struct PluginConfig
 	double simpleClimbHeadroomPct = 20.0;
 	double simpleDescendFps = 70.0;
 
+	// D-25 + D-26: the controller the project arrived at. Climb when spare
+	// capacity clears the measured price of the next rung plus the margin;
+	// descend when frames actually arrive late.
+	//
+	// The margin is the ONLY number a user should ever set: the price is
+	// measured per rung per session, so it already absorbs resolution, headset,
+	// GPU and scene. A raw threshold would need a different value on every rung
+	// and every system - which is the knob that produced 14% and hunted.
+	bool adaptiveMode = false;
+	double climbMarginPct = 5.0;
+	double descendMissRatePct = 5.0;
+	double climbCleanSeconds = 8.0;
+
 	// The Community Shaders build the preset ladder was verified against.
 	//
 	// Presets.h hardcodes each quality mode's resolution scale, copied by hand

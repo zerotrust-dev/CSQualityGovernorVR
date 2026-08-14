@@ -154,6 +154,10 @@ PluginConfig PluginConfig::Load(const std::filesystem::path& a_path)
 	config.simpleClimbHeadroomPct =
 		ini.GetDouble("SimpleClimbHeadroomPct", config.simpleClimbHeadroomPct);
 	config.simpleDescendFps = ini.GetDouble("SimpleDescendFps", config.simpleDescendFps);
+	config.adaptiveMode = ini.GetBool("AdaptiveMode", config.adaptiveMode);
+	config.climbMarginPct = ini.GetDouble("ClimbMarginPct", config.climbMarginPct);
+	config.descendMissRatePct = ini.GetDouble("DescendMissRatePct", config.descendMissRatePct);
+	config.climbCleanSeconds = ini.GetDouble("ClimbCleanSeconds", config.climbCleanSeconds);
 	config.targetHz = ini.GetDouble("TargetHz", config.targetHz);
 
 	config.cycler.startDelaySeconds =

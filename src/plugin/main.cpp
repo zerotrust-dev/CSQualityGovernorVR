@@ -9,6 +9,8 @@
 
 #include "VRAPI/CSinterface001.h"
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <deque>
@@ -401,6 +403,92 @@ std::optional<Preset> g_bufferedTarget;
 // would be a spin, not a recovery.
 bool g_governorDisabled = false;
 
+// D-26: GPU samples taken while the sweep dwells on each preset, so the cost of
+// a rung can be measured on THIS machine instead of shipped as a seed.
+//
+// The sweep has always walked all seven presets and thrown the result away; this
+// is the collection the controller needed. Deduplicated by gpu_frame at the
+// point of collection, because a repeated index means the timer produced nothing
+// and counting it twice weights a measurement by how long it stayed published
+// rather than how often it occurred (Rule 8).
+//
+// Dwell frames only. Settling frames are the transition, not the preset.
+std::array<std::vector<double>, kPresets.size()> g_dwellGpuMs;
+std::uint64_t g_lastDwellGpuFrame = 0;
+
+// Index into kPresets, which is also SetRungCosts' indexing convention.
+[[nodiscard]] std::size_t PresetIndex(Preset a_preset) noexcept
+{
+	for (std::size_t i = 0; i < kPresets.size(); ++i) {
+		if (kPresets[i].preset == a_preset) {
+			return i;
+		}
+	}
+	return 0;
+}
+
+// The next rung up, resolved by SCALE rather than by array order. kPresets
+// happens to be ordered cheapest-first, but depending on that silently would
+// turn a future reorder into a measurement bug instead of a compile error - the
+// same reasoning as NextUp in the controller.
+[[nodiscard]] std::optional<Preset> NextPresetUp(Preset a_preset) noexcept
+{
+	const float current = PresetScale(a_preset);
+	std::optional<Preset> best;
+	float bestScale = 0.0f;
+	for (const auto& info : kPresets) {
+		if (info.scale > current && (!best || info.scale < bestScale)) {
+			best = info.preset;
+			bestScale = info.scale;
+		}
+	}
+	return best;
+}
+
+// Nearest-rank, matching every other P95 in this project. Sorts a copy: the
+// caller's samples stay in collection order for diagnostics.
+[[nodiscard]] double Percentile95(std::vector<double> a_values)
+{
+	if (a_values.empty()) {
+		return 0.0;
+	}
+	std::sort(a_values.begin(), a_values.end());
+	const auto rank = static_cast<std::size_t>(a_values.size() * 0.95);
+	return a_values[std::min(rank, a_values.size() - 1)];
+}
+
+// D-26: the cost of one rung is the difference between adjacent measured P95s.
+//
+// Direct subtraction - no scale-squared, no fitted curve, nothing D-24 was
+// rejected for. Indexed by the preset being LEFT, matching SetRungCosts.
+//
+// A rung is left at 0 (unmeasured) unless BOTH ends have enough samples and the
+// step costs something. A step that measures as free is not a measurement of a
+// step; it is two dwells in different scenes.
+[[nodiscard]] std::array<double, kPresets.size()> MeasureRungCosts()
+{
+	constexpr std::size_t kMinSamples = 200;  // ~3 s at 72 Hz
+
+	std::array<double, kPresets.size()> p95{};
+	for (std::size_t i = 0; i < kPresets.size(); ++i) {
+		p95[i] = g_dwellGpuMs[i].size() >= kMinSamples ? Percentile95(g_dwellGpuMs[i]) : 0.0;
+	}
+
+	std::array<double, kPresets.size()> cost{};
+	for (std::size_t i = 0; i < kPresets.size(); ++i) {
+		const auto up = NextPresetUp(kPresets[i].preset);
+		if (!up || p95[i] <= 0.0) {
+			continue;
+		}
+		const auto upIndex = PresetIndex(*up);
+		if (p95[upIndex] <= p95[i]) {
+			continue;
+		}
+		cost[i] = p95[upIndex] - p95[i];
+	}
+	return cost;
+}
+
 // E-50: a hold is a decision, and D-12 asks for a session to be reconstructible
 // from the log alone INCLUDING decisions to do nothing. Only changes were being
 // logged, so D-20 - whose entire purpose is to suppress a change - blocked
@@ -641,6 +729,42 @@ void FinishIfDone()
 		logger::info("results written to {}", g_reporter->Directory().string());
 	}
 	logger::info("cycler finished in state {}", CyclerStateName(state));
+
+	// D-26: hand the governor what the sweep just measured.
+	//
+	// This is the gap that made the seeds self-confirming: the sweep walked all
+	// seven presets every session and the controller never saw the result, so a
+	// rung's price came from another machine and could only be corrected by a
+	// climb the price itself refused (E-54).
+	//
+	// Logged in full because a threshold nobody can decompose is a threshold
+	// nobody can argue with. An unmeasured rung says so rather than showing a
+	// zero that reads like "free".
+	if (g_governor) {
+		const auto costs = MeasureRungCosts();
+		g_governor->SetRungCosts(costs);
+
+		const double budget = g_config.cycler.frameBudgetMs;
+		for (std::size_t i = 0; i < kPresets.size(); ++i) {
+			const auto up = NextPresetUp(kPresets[i].preset);
+			if (!up) {
+				continue;
+			}
+			if (costs[i] > 0.0) {
+				logger::info("[rung] {} -> {}: {:.2f} ms ({:.1f}% of budget), climb needs "
+							 "{:.1f}% | {} dwell samples",
+					PresetName(kPresets[i].preset), PresetName(*up), costs[i],
+					100.0 * costs[i] / budget,
+					100.0 * g_governor->ClimbThreshold(kPresets[i].preset),
+					g_dwellGpuMs[i].size());
+			} else {
+				logger::info("[rung] {} -> {}: NOT MEASURED ({} dwell samples), climb needs "
+							 "{:.1f}% until experience lowers it",
+					PresetName(kPresets[i].preset), PresetName(*up), g_dwellGpuMs[i].size(),
+					100.0 * g_governor->ClimbThreshold(kPresets[i].preset));
+			}
+		}
+	}
 	if (g_config.monitorAfterSweep) {
 		logger::info("monitoring: still recording frames, GPU time and API state for the rest of "
 					 "the session.");
@@ -893,6 +1017,21 @@ void OnFrame(double a_now, double a_frameTimeMs)
 	const std::uint64_t gpuUs = g_gpuTiming ? g_api.GpuTimeUs() : 0;
 	const std::uint64_t gpuFrame = g_gpuTiming ? g_api.GpuFrameIndex() : 0;
 
+	// D-26: collect the sweep's own measurement of what each preset costs.
+	//
+	// Dwelling only - Settling frames are the transition rather than the preset,
+	// and including them would price a rung by the cost of arriving at it.
+	// Deduplicated here, at the point of collection, so no downstream analysis
+	// has to remember to (Rule 8).
+	if (!monitoring && gpuUs > 0 && gpuFrame != g_lastDwellGpuFrame &&
+		g_cycler->State() == CyclerState::Dwelling) {
+		g_lastDwellGpuFrame = gpuFrame;
+		if (const auto dwellInfo = FindPreset(g_cycler->CurrentTarget())) {
+			g_dwellGpuMs[PresetIndex(dwellInfo->preset)].push_back(
+				static_cast<double>(gpuUs) / 1000.0);
+		}
+	}
+
 	// While monitoring, the preset is whatever CS actually has - nothing is
 	// driving it any more, but the player can change it from the CS menu. It
 	// comes from the 2 Hz snapshot rather than a per-frame API call.
@@ -1018,7 +1157,21 @@ void BeginSession()
 		governorConfig.simpleMode = g_config.simpleMode;
 		governorConfig.simpleClimbHeadroomFrac = g_config.simpleClimbHeadroomPct / 100.0;
 		governorConfig.simpleDescendFps = g_config.simpleDescendFps;
+		governorConfig.adaptiveMode = g_config.adaptiveMode;
+		governorConfig.climbMarginFrac = g_config.climbMarginPct / 100.0;
+		governorConfig.descendMissRate = g_config.descendMissRatePct / 100.0;
+		governorConfig.climbCleanSeconds = g_config.climbCleanSeconds;
 		g_governor = std::make_unique<GovernorCore>(governorConfig);
+
+		if (g_config.adaptiveMode) {
+			logger::info("ADAPTIVE MODE (D-25/D-26): climb when spare P95 GPU clears the "
+						 "measured price of the next rung plus a {:.0f}% margin; descend when "
+						 "more than {:.0f}% of a window arrives late. Rung prices are measured "
+						 "by the sweep - until it finishes, every rung is unmeasured and asks "
+						 "{:.0f}%.",
+				g_config.climbMarginPct, g_config.descendMissRatePct,
+				100.0 * governorConfig.unknownRungThresholdFrac);
+		}
 
 		if (g_config.simpleMode) {
 			logger::info("SIMPLE MODE: up one preset at {:.0f}% overhead, down one below "
