@@ -107,9 +107,10 @@ evening.
 
 ## Sent
 
-**Channel:** Nexus Mods private message to `ParticleTroned`, sent from the Nexus
-account `DemosDrax` — a reply will arrive there, not on GitHub
-(<https://www.nexusmods.com/profile/ParticleTroned>), 2026-08-13.
+**Channel:** Nexus Mods private message to `ParticleTroned`
+(<https://www.nexusmods.com/profile/ParticleTroned>), sent 2026-08-13 from the
+Nexus account **`DemosDrax`**. A reply arrives in that inbox — not on GitHub, and
+not under the `zerotrust-dev` identity the linked repository carries.
 
 **Why not a GitHub issue:** `ParticleTroned/skyrim-community-shaders` has
 `has_issues=false` and `has_discussions=false`, and the README states no contact
