@@ -2511,3 +2511,47 @@ though the asymmetry now has a cause (D-4) rather than being a rule of thumb.
 
 Absorbed rather than deleted: the CPU-bound guard is now a consequence of the
 model (D-6), and the failure memory is now backoff (D-9).
+
+## The baseline is what runs today, not what ran before
+
+Added 2026-08-13, after the research phase closed and before D-25/D-26 are built.
+
+**The reference implementation is simple mode at `SimpleClimbHeadroomPct = 20`,
+with VR Render Scale Mode disabled and `TransitionHoldFrames = 3`.** Measured, on
+this machine, this mod list:
+
+| | value |
+|---|---|
+| time at Performance | 72.2% |
+| time at UltraPerformance | 10.7% |
+| time-weighted pixel fraction | 0.256 |
+| late frames | 5.2% |
+| frames beyond two display periods | 0.03% — one per ~46 s |
+| changes per minute | 3.7 |
+| transition cost | ~42 ms held image |
+
+For comparison, the D-18 controller it replaced sat at UltraPerformance **78–86%**
+with a pixel fraction of **0.151**. Simple mode is **+70% quality** against it.
+
+**So D-25 and D-26 must be scored against these numbers, not against D-18.** Any
+earlier wording in those entries that says "the current controller" means this
+table. A replacement that beats D-18 and loses to this has lost.
+
+**Simple mode stays in the build.** It is not scaffolding to be deleted once the
+real controller exists — it is the fallback and the reference. `SimpleMode = 1`
+must keep working, so that a bad session can be answered by flipping one ini key
+rather than by rebuilding, and so the comparison stays runnable on any future mod
+list.
+
+**Two things simple mode gets deliberately wrong**, and the only reasons to
+replace it:
+
+1. It decides on the **mean**, which is what hid the 78× difference in the
+   20–27.8 ms band between 20% and 14% (E-57). The tail is what a locked
+   framerate is lost to.
+2. Its descend rule reads **mean fps**, which swung 68.9–75.5 while 7–11% of
+   frames were missing.
+
+A successor that fixes those two must not give back anything in the table above.
+If it cannot, keeping simple mode is the correct outcome and D-25/D-26 should be
+withdrawn rather than tuned — the same discipline that rejected D-19 and D-24.
