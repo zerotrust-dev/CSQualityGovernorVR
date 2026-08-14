@@ -138,6 +138,10 @@ GovernorCore::GovernorCore(GovernorConfig a_config) :
 {
 	for (std::size_t i = 0; i < kPresets.size(); ++i) {
 		_stepRatio[i] = SeedRatio(kPresets[i].preset);
+		// D-26: nothing is known about a rung until the sweep measures it, and
+		// an unmeasured rung must under-reach rather than guess. SetRungCosts
+		// replaces these; the decay walks them down if it never runs.
+		_climbThreshold[i] = a_config.unknownRungThresholdFrac;
 	}
 }
 
@@ -308,6 +312,16 @@ std::optional<GovernorDecision> GovernorCore::Push(const GovernorSample& a_sampl
 		++_timedSamples;
 	}
 
+	// D-25: counted per frame rather than per evaluation, so a burst spanning an
+	// evaluation boundary is still seen as one run. A windowed rate cannot
+	// distinguish six late frames together from six spread across two seconds,
+	// and only the first is felt.
+	if (entry.frameMs > _config.frameBudgetMs * _config.missToleranceFrac) {
+		++_consecutiveMisses;
+	} else {
+		_consecutiveMisses = 0;
+	}
+
 	_window.push_back(entry);
 	Trim(a_sample.nowSeconds);
 
@@ -368,6 +382,21 @@ GovernorDecision GovernorCore::Evaluate(double a_nowSeconds, Preset a_current)
 		_window.empty() ? 0.0 : frameSum / static_cast<double>(_window.size());
 	decision.headroomMs = gpus.empty() ? 0.0 : _config.frameBudgetMs - decision.p95GpuMs;
 
+	// D-25's delivery signal. Deliberately not dropRate, which only counts
+	// intervals missed outright at 1.5x budget - far too coarse to steer on.
+	const double lateAt = _config.frameBudgetMs * _config.missToleranceFrac;
+	std::size_t late = 0;
+	for (const double f : frames) {
+		if (f > lateAt) {
+			++late;
+		}
+	}
+	decision.missRate = frames.empty() ? 0.0 : static_cast<double>(late) / frames.size();
+	decision.consecutiveMisses = _consecutiveMisses;
+	if (late > 0) {
+		_lastMissAt = a_nowSeconds;
+	}
+
 	// D-18: close the measurement opened by the last change, now that the window
 	// holds frames from the new preset only. This is D-5's free two-point
 	// calibration, taken at last, and taken per step rather than fitted.
@@ -391,6 +420,15 @@ GovernorDecision GovernorCore::Evaluate(double a_nowSeconds, Preset a_current)
 		return decision;
 	}
 
+	if (_config.adaptiveMode) {
+		// Relax thresholds only while nothing is going wrong. Decaying during
+		// trouble would lower the bar exactly when it should not.
+		if (decision.missRate <= 0.0) {
+			DecayThresholds(a_nowSeconds);
+		}
+		return EvaluateAdaptive(a_nowSeconds, a_current, std::move(decision));
+	}
+
 	if (_config.simpleMode) {
 		return EvaluateSimple(a_nowSeconds, a_current, std::move(decision));
 	}
@@ -398,6 +436,167 @@ GovernorDecision GovernorCore::Evaluate(double a_nowSeconds, Preset a_current)
 	return decision.tier == GovernorTier::Headroom ?
 	           EvaluateHeadroom(a_nowSeconds, a_current, std::move(decision)) :
 	           EvaluateFrametime(a_nowSeconds, a_current, std::move(decision));
+}
+
+void GovernorCore::SetRungCosts(const std::array<double, kPresets.size()>& a_costMs)
+{
+	if (_config.frameBudgetMs <= 0.0) {
+		return;
+	}
+	_rungCostsKnown = false;
+	for (std::size_t i = 0; i < a_costMs.size(); ++i) {
+		// A rung that costs nothing was not measured. A rung that costs more
+		// than the whole budget is a measurement taken across a scene change,
+		// not a step.
+		const bool usable = a_costMs[i] > 0.0 && a_costMs[i] < _config.frameBudgetMs;
+		_rungCostFrac[i] = usable ? a_costMs[i] / _config.frameBudgetMs : 0.0;
+		_climbThreshold[i] = usable ? _rungCostFrac[i] + _config.climbMarginFrac :
+									  _config.unknownRungThresholdFrac;
+		_rungCostsKnown = _rungCostsKnown || usable;
+	}
+}
+
+double GovernorCore::ClimbThreshold(Preset a_from) const noexcept
+{
+	const auto index = RatioIndex(a_from);
+	const double t = _climbThreshold[index];
+	return t > 0.0 ? t : _config.unknownRungThresholdFrac;
+}
+
+double GovernorCore::RungCostFraction(Preset a_from) const noexcept
+{
+	return _rungCostFrac[RatioIndex(a_from)];
+}
+
+// D-25's escape from a self-confirming threshold.
+//
+// A rung can only be learned by climbing it, and the threshold is what refuses
+// the climb - which is how the governor sat at UltraPerformance with a rung it
+// could never reach, no matter how good conditions became (E-54). Relaxing the
+// demand after a clean stretch means it eventually tries.
+//
+// The floor is the measured price of the rung. Bidding below that is what made
+// 14% hunt (E-57), and no amount of clean running makes a rung cheaper than it
+// is - so the MARGIN can decay away, and the COST cannot.
+void GovernorCore::DecayThresholds(double a_nowSeconds)
+{
+	if (a_nowSeconds - _lastDecayAt < _config.thresholdDecaySeconds) {
+		return;
+	}
+	_lastDecayAt = a_nowSeconds;
+
+	for (std::size_t i = 0; i < _climbThreshold.size(); ++i) {
+		// A MEASURED rung already knows its correct resting value - the price
+		// plus the margin the player chose - so decay only undoes a raise from a
+		// past failure and stops there. Letting it erode the margin as well
+		// would walk the threshold down to the bare price, which is exactly the
+		// bid that made 14% hunt (E-57), and would silently discard the one
+		// setting the player owns.
+		//
+		// An UNMEASURED rung has no such resting value, so it keeps relaxing
+		// until a climb happens and teaches it one. That is the escape from
+		// E-54's deadlock, and it is self-limiting: the climb either holds or
+		// raises the threshold back.
+		const double floor =
+			_rungCostFrac[i] > 0.0 ? _rungCostFrac[i] + _config.climbMarginFrac : 0.0;
+		_climbThreshold[i] = std::max(floor, _climbThreshold[i] - _config.thresholdDecayFrac);
+	}
+}
+
+// D-25 + D-26. The controller the project arrived at.
+//
+// Two rules, in this order, and no predictor between the measurement and the
+// decision:
+//
+//   descend  when frames are actually arriving late
+//   climb    when spare capacity exceeds what the next rung is known to cost
+//
+// Descending on delivery rather than on GPU time is the point. E-49 measured
+// that 92% of late frames had spare GPU time by our own instrument, so GPU time
+// cannot see most of what makes frames late - and both candidate explanations
+// for the difference died (E-55, E-56). Steering on the outcome does not require
+// understanding the cause.
+GovernorDecision GovernorCore::EvaluateAdaptive(double a_nowSeconds, Preset a_current,
+	GovernorDecision a_base)
+{
+	auto decision = std::move(a_base);
+
+	const auto index = RatioIndex(a_current);
+	decision.rungCostFrac = _rungCostFrac[index];
+	decision.climbThresholdFrac = ClimbThreshold(a_current);
+
+	// --- down, first and unconditionally ---
+	//
+	// A burst triggers immediately; a sustained rate needs the window. The two
+	// catch different failures: a cliff, and a scene that is merely too heavy.
+	const bool burst = decision.consecutiveMisses >= _config.descendConsecutiveMisses;
+	const bool sustained = decision.missRate > _config.descendMissRate;
+	if (burst || sustained) {
+		if (const auto down = NextDown(a_current)) {
+			// A rung that could not hold has just told us its price was too
+			// low. Raise what it asks next time rather than rediscovering this.
+			_climbThreshold[RatioIndex(*down)] =
+				std::max(_climbThreshold[RatioIndex(*down)],
+					decision.headroomMs / _config.frameBudgetMs + _config.thresholdRaiseFrac);
+
+			decision.action = GovernorAction::Descend;
+			decision.target = *down;
+			decision.reason = burst ?
+				Say("descend: %zu frames late in a row, %.1f%% of the window over budget",
+					decision.consecutiveMisses, decision.missRate * 100.0) :
+				Say("descend: %.1f%% of the window late, over the %.1f%% limit",
+					decision.missRate * 100.0, _config.descendMissRate * 100.0);
+		} else {
+			decision.reason = Say(
+				"hold: %.1f%% of frames late but already at the cheapest preset",
+				decision.missRate * 100.0);
+		}
+		return decision;
+	}
+
+	// --- up, only from a clean stretch ---
+	const double cleanFor = a_nowSeconds - _lastMissAt;
+	if (cleanFor < _config.climbCleanSeconds) {
+		decision.reason = Say("hold: clean for %.1fs, want %.1fs before climbing", cleanFor,
+			_config.climbCleanSeconds);
+		return decision;
+	}
+
+	if (decision.p95GpuMs <= 0.0) {
+		decision.reason = "hold: no GPU measurement to judge headroom with";
+		return decision;
+	}
+
+	const auto up = NextUp(a_current);
+	if (!up) {
+		decision.reason = Say("hold: %.1f%% spare but already at maximum quality",
+			100.0 * decision.headroomMs / _config.frameBudgetMs);
+		return decision;
+	}
+
+	const double headroomFrac = decision.headroomMs / _config.frameBudgetMs;
+	if (headroomFrac < decision.climbThresholdFrac) {
+		decision.reason = decision.rungCostFrac > 0.0 ?
+			Say("hold: %.1f%% spare, need %.1f%% (rung costs %.1f%% + %.1f%% margin)",
+				headroomFrac * 100.0, decision.climbThresholdFrac * 100.0,
+				decision.rungCostFrac * 100.0,
+				(decision.climbThresholdFrac - decision.rungCostFrac) * 100.0) :
+			Say("hold: %.1f%% spare, need %.1f%% (this rung has never been measured)",
+				headroomFrac * 100.0, decision.climbThresholdFrac * 100.0);
+		return decision;
+	}
+
+	decision.action = GovernorAction::Climb;
+	decision.target = *up;
+	_lastClimbTarget = *up;
+	_lastClimbHeadroom = decision.headroomMs;
+	decision.reason = decision.rungCostFrac > 0.0 ?
+		Say("climb: %.1f%% spare clears %.1f%% (rung costs %.1f%%), clean for %.0fs",
+			headroomFrac * 100.0, decision.climbThresholdFrac * 100.0,
+			decision.rungCostFrac * 100.0, cleanFor) :
+		Say("climb: %.1f%% spare clears %.1f%%, clean for %.0fs - probing an unmeasured rung",
+			headroomFrac * 100.0, decision.climbThresholdFrac * 100.0, cleanFor);
+	return decision;
 }
 
 // Simple mode. An instrument, not a controller.

@@ -63,6 +63,18 @@ struct GovernorDecision
 	// uses the tail, because a locked framerate is lost at the tail.
 	double meanFrameMs = 0.0;
 	double dropRate = 0.0;
+	// D-25: fraction of the window's frames later than budget x missTolerance.
+	// Distinct from dropRate, which counts only outright missed intervals at
+	// 1.5x budget - far too coarse to steer on. This is the signal the adaptive
+	// controller descends on.
+	double missRate = 0.0;
+	// Longest run of consecutive late frames ending at this evaluation. A burst
+	// is felt where the same frames spread thinly are not.
+	std::size_t consecutiveMisses = 0;
+	// What the adaptive controller required to climb, and what it was made of.
+	// Logged so a hold explains itself without anyone reading the code (D-12).
+	double climbThresholdFrac = 0.0;
+	double rungCostFrac = 0.0;
 	double headroomMs = 0.0;  // budget - p95Gpu; negative means over budget
 	bool censored = false;
 };
@@ -140,6 +152,61 @@ struct GovernorConfig
 	// Descend one rung when windowed mean fps falls below this.
 	double simpleDescendFps = 70.0;
 
+	// --- D-25 + D-26: the adaptive threshold controller ---
+	//
+	// Supersedes the landing check for climbing. D-18 and D-24 both put a
+	// PREDICTOR between the measurement and the decision, and both failed inside
+	// it. This does not have one: it climbs when spare capacity exceeds what a
+	// rung is known to cost, and lowers what it demands when experience says it
+	// was asking too much.
+	//
+	// Climb:   headroomP95 / budget  >=  threshold[from]     and clean for a while
+	// Descend: missRate over the window is too high, or too many in a row
+	//
+	// The descend rule is the whole reason this exists. E-49: on 92% of missed
+	// frames the GPU timer read UNDER budget, so GPU time cannot see most of
+	// what makes frames late. Frame delivery can. GPU time proposes; delivery
+	// disposes.
+	bool adaptiveMode = false;
+
+	// D-26. threshold[R] = cost of the rung above R, as a fraction of budget,
+	// PLUS the margin. Only the margin is a preference; the cost is measured.
+	//
+	// The player named "15-20%" from feel and the measured cost of leaving
+	// UltraPerformance is 15.1% of budget - the number being felt was the price
+	// of a rung (E-57). 20% held; 14%, below the price, hunted.
+	double climbMarginFrac = 0.05;
+	// Used only for a rung whose cost has never been measured. Deliberately
+	// pessimistic: an unmeasured rung should under-reach, and the decay below
+	// walks it down until experience says otherwise.
+	double unknownRungThresholdFrac = 0.30;
+	// A threshold relaxes while nothing goes wrong, which is what stops a
+	// pessimistic value being self-confirming - the rung can only be learned by
+	// climbing it, and the threshold is what refuses the climb (E-54).
+	double thresholdDecayFrac = 0.01;
+	double thresholdDecaySeconds = 8.0;
+	// Raised on a reversal to just above what was attempted, so the same bid is
+	// not made twice. Generalises D-20.
+	double thresholdRaiseFrac = 0.02;
+	// Decay floors at cost + margin for a measured rung, so clean running can
+	// only undo a raise from a past failure - never the margin itself. Eroding
+	// the margin would walk the demand down to the bare price of the rung, which
+	// is the bid that made 14% hunt, and would discard the one number the player
+	// actually sets. An unmeasured rung has no resting value and keeps relaxing
+	// until a climb teaches it one.
+
+	// Descend when the window's late-frame rate exceeds this...
+	double descendMissRate = 0.05;
+	// ...or when this many consecutive frames are late, which catches a cliff
+	// faster than a windowed rate can.
+	std::size_t descendConsecutiveMisses = 3;
+	// A frame is late beyond budget x this. 1.05 lands between points on the
+	// 1/6 ms measurement grid, so the operative threshold is the next one up
+	// (E-56); do not tune this more finely than that.
+	double missToleranceFrac = 1.05;
+	// Clean running required before a climb is considered at all.
+	double climbCleanSeconds = 8.0;
+
 	// Decision window and cadence.
 	double judgeWindowSeconds = 2.0;
 	double evalIntervalSeconds = 0.5;
@@ -216,6 +283,24 @@ public:
 	[[nodiscard]] double ClimbBlockedByFailure(Preset a_target, double a_headroomMs,
 		double a_nowSeconds) const noexcept;
 
+	// D-26: what one step up from each preset actually costs on this machine, in
+	// milliseconds of P95 GPU time. Supplied by the caller after the calibration
+	// sweep, which already visits all seven presets and until now threw the
+	// result away.
+	//
+	// Measured by direct subtraction of adjacent P95s - no scale-squared, no
+	// fitted curve, nothing D-24 was rejected for. A zero entry means that rung
+	// was never measured and falls back to unknownRungThresholdFrac.
+	//
+	// Index by the preset being LEFT, same convention as the step table.
+	void SetRungCosts(const std::array<double, kPresets.size()>& a_costMs);
+
+	// The headroom fraction currently demanded to climb from this preset, and
+	// the measured rung cost inside it. Diagnostics: a threshold nobody can
+	// decompose is a threshold nobody can argue with.
+	[[nodiscard]] double ClimbThreshold(Preset a_from) const noexcept;
+	[[nodiscard]] double RungCostFraction(Preset a_from) const noexcept;
+
 private:
 	struct Entry
 	{
@@ -236,6 +321,12 @@ private:
 	// definition for why it reads the mean.
 	[[nodiscard]] GovernorDecision EvaluateSimple(double a_nowSeconds, Preset a_current,
 		GovernorDecision a_base);
+	// D-25 + D-26.
+	[[nodiscard]] GovernorDecision EvaluateAdaptive(double a_nowSeconds, Preset a_current,
+		GovernorDecision a_base);
+	// Relaxes a rung's threshold after a stretch with nothing going wrong, never
+	// below the rung's measured price.
+	void DecayThresholds(double a_nowSeconds);
 	[[nodiscard]] GovernorDecision EvaluateHeadroom(double a_nowSeconds, Preset a_current,
 		GovernorDecision a_base);
 	[[nodiscard]] GovernorDecision EvaluateFrametime(double a_nowSeconds, Preset a_current,
@@ -291,6 +382,21 @@ private:
 	double _lastClimbAt = -1.0e9;
 	double _lastClimbHeadroom = 0.0;
 	bool _climbInFlight = false;
+
+	// --- D-25/D-26 state ---
+	//
+	// What each rung costs as a fraction of budget, and what is currently
+	// demanded to climb it. Indexed by the preset being LEFT.
+	std::array<double, kPresets.size()> _rungCostFrac{};
+	std::array<double, kPresets.size()> _climbThreshold{};
+	bool _rungCostsKnown = false;
+	double _lastDecayAt = -1.0e9;
+	// When the window last showed trouble. A climb wants a clean stretch behind
+	// it, not merely a clean instant.
+	double _lastMissAt = -1.0e9;
+	// Consecutive late frames, carried across pushes so a burst spanning an
+	// evaluation boundary is still seen as a burst.
+	std::size_t _consecutiveMisses = 0;
 
 	// The two-point measurement a change gives us for free: the P95 from just
 	// before it, held until the window has refilled at the new preset.

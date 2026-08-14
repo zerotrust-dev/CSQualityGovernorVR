@@ -605,3 +605,122 @@ TEST_CASE("simple mode holds between the two rules", "[governor][simple]")
 	REQUIRE_FALSE(h.decisions.empty());
 	CHECK(h.decisions.back().reason.find("hold") != std::string::npos);
 }
+
+namespace {
+
+// D-25/D-26 harness: adaptive mode with a measured ladder.
+GovernorConfig AdaptiveConfig()
+{
+	auto config = TestConfig();
+	config.adaptiveMode = true;
+	config.climbMarginFrac = 0.05;
+	config.climbCleanSeconds = 2.0;
+	config.thresholdDecaySeconds = 1.0;
+	return config;
+}
+
+// A rung costing 15% of budget out of UltraPerformance, which is what the real
+// ladder measures (E-57), and cheaper steps above it.
+std::array<double, kPresets.size()> MeasuredRungCosts(double a_budget)
+{
+	std::array<double, kPresets.size()> costs{};
+	for (std::size_t i = 0; i < costs.size(); ++i) {
+		costs[i] = a_budget * 0.15;
+	}
+	return costs;
+}
+
+}
+
+TEST_CASE("adaptive mode descends on late frames even with spare GPU", "[governor][adaptive]")
+{
+	// The whole reason D-25 exists. E-49: on 92% of late frames the GPU timer
+	// read UNDER budget. A controller that descends on GPU time cannot see
+	// them; this one must.
+	auto config = AdaptiveConfig();
+	Harness h{ config, Preset::Quality };
+	h.core.SetRungCosts(MeasuredRungCosts(kBudget));
+
+	// Frames arriving 20% late while the GPU claims 6 ms of headroom.
+	h.Run(6.0, kBudget * 1.2, 8.0);
+
+	REQUIRE_FALSE(h.changes.empty());
+	CHECK(h.changes.front().action == GovernorAction::Descend);
+	CHECK(h.changes.front().reason.find("late") != std::string::npos);
+}
+
+TEST_CASE("adaptive mode will not climb below the price of the rung", "[governor][adaptive]")
+{
+	// D-26, and the mechanism behind 14% hunting: a threshold under the rung's
+	// cost buys a climb that cannot be paid for. With the cost measured at 15%
+	// and a 5% margin, 18% of headroom must not be enough.
+	auto config = AdaptiveConfig();
+	Harness h{ config, Preset::UltraPerformance };
+	h.core.SetRungCosts(MeasuredRungCosts(kBudget));
+
+	// 18% headroom: above the rung cost, below cost+margin.
+	h.Run(10.0, kBudget, kBudget * 0.82);
+
+	for (const auto& change : h.changes) {
+		CHECK(change.action != GovernorAction::Climb);
+	}
+	REQUIRE_FALSE(h.decisions.empty());
+	CHECK(h.decisions.back().reason.find("rung costs") != std::string::npos);
+}
+
+TEST_CASE("adaptive mode climbs once headroom clears cost plus margin", "[governor][adaptive]")
+{
+	auto config = AdaptiveConfig();
+	Harness h{ config, Preset::UltraPerformance };
+	h.core.SetRungCosts(MeasuredRungCosts(kBudget));
+
+	// 25% headroom, comfortably past the 20% the rung demands.
+	h.Run(10.0, kBudget, kBudget * 0.75);
+
+	REQUIRE_FALSE(h.changes.empty());
+	CHECK(h.changes.front().action == GovernorAction::Climb);
+	CHECK(h.changes.front().target == Preset::Performance);
+}
+
+TEST_CASE("an unmeasured rung starts pessimistic and relaxes", "[governor][adaptive]")
+{
+	// E-54's deadlock: a rung can only be learned by climbing it, and the
+	// threshold is what refuses the climb. Without decay this never resolves.
+	auto config = AdaptiveConfig();
+	config.unknownRungThresholdFrac = 0.30;
+	config.thresholdDecayFrac = 0.05;
+	config.thresholdDecaySeconds = 1.0;
+
+	Harness h{ config, Preset::UltraPerformance };
+	// No SetRungCosts: nothing measured, so it must start at 30%.
+	CHECK(h.core.ClimbThreshold(Preset::UltraPerformance) == Approx(0.30));
+
+	// 22% headroom - under the initial bar, so nothing happens at first.
+	h.Run(20.0, kBudget, kBudget * 0.78);
+
+	CHECK(h.core.ClimbThreshold(Preset::UltraPerformance) < 0.30);
+	REQUIRE_FALSE(h.changes.empty());
+	CHECK(h.changes.front().action == GovernorAction::Climb);
+}
+
+TEST_CASE("decay never erodes the margin on a measured rung", "[governor][adaptive]")
+{
+	// The floor that separates this from the 14% setting that hunted. Clean
+	// running may undo a raise from a past failure; it must never walk the
+	// demand down to the bare price of the rung, which would be a bid with no
+	// margin at all - and would silently discard the one number the player sets.
+	auto config = AdaptiveConfig();
+	config.thresholdDecayFrac = 0.05;
+	config.thresholdDecaySeconds = 0.5;
+
+	Harness h{ config, Preset::UltraPerformance };
+	h.core.SetRungCosts(MeasuredRungCosts(kBudget));
+	REQUIRE(h.core.ClimbThreshold(Preset::UltraPerformance) == Approx(0.20));
+
+	// A long clean stretch with far too little headroom to ever climb, so decay
+	// runs and runs with nothing to interrupt it.
+	h.Run(60.0, kBudget, kBudget * 0.95);
+
+	CHECK(h.core.ClimbThreshold(Preset::UltraPerformance) == Approx(0.20));
+	CHECK(h.core.RungCostFraction(Preset::UltraPerformance) == Approx(0.15));
+}
