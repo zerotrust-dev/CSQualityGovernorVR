@@ -102,3 +102,38 @@ features were compatible than pick one.
 Happy to test a branch, run controlled measurements, or provide captures — I have
 per-frame GPU traces and tooling for this and can turn a comparison around in an
 evening.
+
+---
+
+## Sent
+
+**Channel:** Nexus Mods private message to `ParticleTroned`
+(<https://www.nexusmods.com/profile/ParticleTroned>), 2026-08-13.
+
+**Why not a GitHub issue:** `ParticleTroned/skyrim-community-shaders` has
+`has_issues=false` and `has_discussions=false`, and the README states no contact
+route. Nexus is the only channel the author offers. The mod page also has a Bugs
+tab, which is public and trackable — kept in reserve as a follow-up if the direct
+message gets no reply.
+
+**What was sent:** a short covering message with the measurement, the source
+reference, the question, and a link to this document. The document was **not**
+attached — the link renders properly in a browser and can be updated in place if
+the conversation continues.
+
+**Subject line used:**
+`CSX VR: quality changes force a render-target relatch when VR Render Scale Mode is on`
+
+**Deliberately left out of the covering message**, and kept here instead: that
+Render Scale Mode showed no measurable benefit on this hardware. Leading with it
+in a direct message reads as "your feature is pointless", which is not the point
+being made — the ask is that the two features be compatible, and the null result
+belongs with the method that produced it.
+
+**Nothing on our side is blocked on a reply.** The governor runs with VR Render
+Scale Mode disabled at a ~42 ms transition. `RC_PORTING_PLAN.md` carries the
+per-RC re-check that would reopen this if a future CS build makes the feature
+worth having.
+
+**If a reply comes**, record it here — particularly a "by design" answer with a
+reason, which would close the question properly and is worth as much as a fix.
