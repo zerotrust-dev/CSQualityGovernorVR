@@ -698,7 +698,11 @@ TEST_CASE("an unmeasured rung starts pessimistic and relaxes", "[governor][adapt
 	// 22% headroom - under the initial bar, so nothing happens at first.
 	h.Run(20.0, kBudget, kBudget * 0.78);
 
-	CHECK(h.core.ClimbThreshold(Preset::UltraPerformance) < 0.30);
+	// It relaxed, and it relaxed to the margin rather than to nothing: an
+	// unmeasured rung still has to cost something.
+	const double relaxed = h.core.ClimbThreshold(Preset::UltraPerformance);
+	CHECK(relaxed < 0.30);
+	CHECK(relaxed >= Approx(config.climbMarginFrac));
 	REQUIRE_FALSE(h.changes.empty());
 	CHECK(h.changes.front().action == GovernorAction::Climb);
 }

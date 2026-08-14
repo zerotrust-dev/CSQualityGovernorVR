@@ -458,9 +458,15 @@ void GovernorCore::SetRungCosts(const std::array<double, kPresets.size()>& a_cos
 
 double GovernorCore::ClimbThreshold(Preset a_from) const noexcept
 {
-	const auto index = RatioIndex(a_from);
-	const double t = _climbThreshold[index];
-	return t > 0.0 ? t : _config.unknownRungThresholdFrac;
+	// No sentinel. Every entry is initialised by the constructor and replaced by
+	// SetRungCosts, so the stored value is always the answer.
+	//
+	// This used to fall back to unknownRungThresholdFrac when the entry was 0,
+	// which read as "unset" - but 0 is also where an unmeasured rung's decay
+	// legitimately ends up, so a fully relaxed threshold reported itself as the
+	// pessimistic default. The controller kept climbing on the real value while
+	// every diagnostic showed the wrong one.
+	return _climbThreshold[RatioIndex(a_from)];
 }
 
 double GovernorCore::RungCostFraction(Preset a_from) const noexcept
@@ -497,8 +503,13 @@ void GovernorCore::DecayThresholds(double a_nowSeconds)
 		// until a climb happens and teaches it one. That is the escape from
 		// E-54's deadlock, and it is self-limiting: the climb either holds or
 		// raises the threshold back.
-		const double floor =
-			_rungCostFrac[i] > 0.0 ? _rungCostFrac[i] + _config.climbMarginFrac : 0.0;
+		// Unmeasured rungs relax toward the margin, not toward zero. Zero would
+		// eventually permit a climb on no spare capacity whatever, which is not
+		// caution running out - it is the controller forgetting that a rung
+		// costs anything at all. The margin is the least it can sensibly demand.
+		const double floor = _rungCostFrac[i] > 0.0 ?
+		                         _rungCostFrac[i] + _config.climbMarginFrac :
+		                         _config.climbMarginFrac;
 		_climbThreshold[i] = std::max(floor, _climbThreshold[i] - _config.thresholdDecayFrac);
 	}
 }
