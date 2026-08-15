@@ -736,13 +736,20 @@ TEST_CASE("the clean gate tolerates ordinary lateness", "[governor][adaptive]")
 	// rate nearly always contains one - so the timer reset on almost every
 	// evaluation and the gate could never be satisfied.
 	//
-	// Here every 12th frame is late: 8% of the window, well under the 15%
-	// descend limit, so this must count as clean and a climb must eventually
-	// happen.
+	// Every 12th frame is late: 8.3% of the window, against a 15% descend limit
+	// and the shipped 0.8 clean fraction, so the bar is 12% and this is clean.
+	// A climb must therefore happen.
+	//
+	// Deliberately uses the SHIPPED cleanMissRateFrac rather than overriding it.
+	// The first version of this test set 0.5, which put the bar at 7.5% - below
+	// the 8.3% it was feeding - so it asserted something the implementation was
+	// right to refuse. Pinning the default here means the test fails if the
+	// default ever drifts back to a value that normal running cannot satisfy,
+	// which is the actual bug it exists to catch.
 	auto config = AdaptiveConfig();
 	config.descendMissRate = 0.15;
-	config.cleanMissRateFrac = 0.5;  // clean below 7.5%
 	config.climbCleanSeconds = 2.0;
+	REQUIRE(config.cleanMissRateFrac * config.descendMissRate > 1.0 / 12.0);
 
 	Harness h{ config, Preset::UltraPerformance };
 	h.core.SetRungCosts(MeasuredRungCosts(kBudget));

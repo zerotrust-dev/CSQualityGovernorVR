@@ -206,16 +206,21 @@ struct GovernorConfig
 	double missToleranceFrac = 1.05;
 	// Clean running required before a climb is considered at all.
 	double climbCleanSeconds = 8.0;
-	// What "clean" means, as a fraction of the descend rate. At 0.5 a window is
-	// clean while fewer than half as many frames are late as would trigger a
-	// descent.
+	// What "clean" means, as a fraction of the descend rate.
 	//
-	// It is emphatically NOT "no late frames". That was the first version, and
-	// it made the gate unsatisfiable: a 2-second window holds ~144 frames and an
-	// ordinary 1-4% late rate nearly always puts one in it, so the timer reset
-	// on almost every evaluation and a session ended stranded at
-	// UltraPerformance unable to climb at all.
-	double cleanMissRateFrac = 0.5;
+	// It is emphatically NOT "no late frames". That was the first version and it
+	// made the gate unsatisfiable: a 2-second window holds ~144 frames and an
+	// ordinary late rate nearly always puts one in it, so the timer reset on
+	// almost every evaluation and a session ended stranded at UltraPerformance
+	// unable to climb at all.
+	//
+	// 0.8 rather than 0.5, and the difference matters. Measured sessions run at
+	// 4.4-5.2% late against a 7% descend rate, so a half-rate bar of 3.5% would
+	// still be below normal running - the gate would look fixed and stay shut.
+	// At 0.8 the bar is 5.6%: satisfied while things are merely normal, closed
+	// while they are approaching the point of descending, which is the only
+	// state it was ever meant to guard against.
+	double cleanMissRateFrac = 0.8;
 
 	// Decision window and cadence.
 	double judgeWindowSeconds = 2.0;
