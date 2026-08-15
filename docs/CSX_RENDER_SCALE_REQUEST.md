@@ -139,3 +139,26 @@ worth having.
 
 **If a reply comes**, record it here — particularly a "by design" answer with a
 reason, which would close the question properly and is worth as much as a fix.
+
+## Reply received, 2026-08-14
+
+ParticleTroned answered within a day, via the same Nexus thread:
+
+> hi thx a lot for your message. am at sis wedding atm and will come back to you
+> early next week. Renderscale is still WIP and all suggestions etc very welcome.
+
+Three things follow.
+
+**Render Scale Mode is work in progress, from the author.** That is not our
+inference from the "Experimental" tooltip any more, it is stated. It settles the
+question `RC_PORTING_PLAN.md` left open — the feature is expected to change, so
+the per-RC re-check is the right posture and the reopen trigger stays.
+
+**Suggestions are welcome, so the second report is worth sending** — the ~3-frame
+hidden-area-mask artefact at the nose (E-59), which is smaller, more clearly a
+defect, and independent of the architecture question. Hold it until he replies
+properly rather than stacking messages while he is at a wedding.
+
+**A substantive answer is expected early the week of 2026-08-17.** Record it here
+when it arrives, including a "by design" answer with a reason, which would close
+the question as usefully as a fix and let the reopen trigger be deleted.
