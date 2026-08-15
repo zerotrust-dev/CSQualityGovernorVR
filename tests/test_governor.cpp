@@ -728,3 +728,44 @@ TEST_CASE("decay never erodes the margin on a measured rung", "[governor][adapti
 	CHECK(h.core.ClimbThreshold(Preset::UltraPerformance) == Approx(0.20));
 	CHECK(h.core.RungCostFraction(Preset::UltraPerformance) == Approx(0.15));
 }
+
+TEST_CASE("the clean gate tolerates ordinary lateness", "[governor][adaptive]")
+{
+	// The bug that stranded a session at UltraPerformance. "Clean" once meant
+	// "no late frame in the window", and a 2-second window at an ordinary late
+	// rate nearly always contains one - so the timer reset on almost every
+	// evaluation and the gate could never be satisfied.
+	//
+	// Here every 12th frame is late: 8% of the window, well under the 15%
+	// descend limit, so this must count as clean and a climb must eventually
+	// happen.
+	auto config = AdaptiveConfig();
+	config.descendMissRate = 0.15;
+	config.cleanMissRateFrac = 0.5;  // clean below 7.5%
+	config.climbCleanSeconds = 2.0;
+
+	Harness h{ config, Preset::UltraPerformance };
+	h.core.SetRungCosts(MeasuredRungCosts(kBudget));
+
+	// 25% headroom, so the threshold is not what is being tested.
+	static std::uint64_t idx = 500'000;
+	for (int i = 0; i < 800; ++i) {
+		h.now += kBudget / 1000.0;
+		GovernorSample sample;
+		sample.nowSeconds = h.now;
+		sample.frameTimeMs = (i % 12 == 0) ? kBudget * 1.4 : kBudget;
+		sample.gpuTimeUs = static_cast<std::uint64_t>(kBudget * 0.75 * 1000.0);
+		sample.gpuFrameIndex = ++idx;
+		if (auto decision = h.core.Push(sample, h.preset)) {
+			h.decisions.push_back(*decision);
+			if (decision->action != GovernorAction::Hold) {
+				h.changes.push_back(*decision);
+				h.preset = decision->target;
+				h.core.NotifyApplied(h.preset, h.now);
+			}
+		}
+	}
+
+	REQUIRE_FALSE(h.changes.empty());
+	CHECK(h.changes.front().action == GovernorAction::Climb);
+}

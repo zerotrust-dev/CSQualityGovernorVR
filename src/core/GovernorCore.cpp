@@ -393,7 +393,22 @@ GovernorDecision GovernorCore::Evaluate(double a_nowSeconds, Preset a_current)
 	}
 	decision.missRate = frames.empty() ? 0.0 : static_cast<double>(late) / frames.size();
 	decision.consecutiveMisses = _consecutiveMisses;
-	if (late > 0) {
+
+	// "Clean" means the miss rate is comfortably under what would make us
+	// descend - NOT that no frame was late.
+	//
+	// This was `late > 0`, which made the clean gate unsatisfiable in practice
+	// and is why a session ended stuck at UltraPerformance with no climbing at
+	// all. A 2-second window holds ~144 frames, and at an ordinary 1-4% late
+	// rate it nearly always contains one, so the timer reset on almost every
+	// evaluation: the log shows "clean for 0.5s" and "clean for 0.0s" 72 times
+	// against a 4-second requirement it could never reach.
+	//
+	// The gate exists to stop climbing straight back into a rung that just
+	// failed. Ordinary background lateness is not that, and demanding a
+	// perfectly clean window means demanding something the machine never
+	// produces.
+	if (decision.missRate > _config.descendMissRate * _config.cleanMissRateFrac) {
 		_lastMissAt = a_nowSeconds;
 	}
 
