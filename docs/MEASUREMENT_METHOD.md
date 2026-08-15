@@ -202,3 +202,27 @@ So, for anything that would change a decision:
 
 The rejection this rule comes from was worth more than the proposal would have
 been if it had been accepted.
+
+**12. Verify the configuration you are asserting, every session.**
+
+E-61 was published on the sentence "with Render Scale Mode off there is no
+relatch possible, so this 57 ms spike must be something else". Render Scale Mode
+was on. It had been on since an A/B two days earlier whose second arm turned it
+on and whose instructions never said to turn it back off, and three sessions were
+then interpreted against a configuration that did not exist.
+
+The setting was readable the whole time, in one line:
+
+    grep -o '"renderScaleMode":[^,}]*' \
+      "<mod>/SKSE/Plugins/CommunityShaders/SettingsUser.json"
+
+So the rule is not "be careful". It is: **when a conclusion depends on a
+configuration, read the configuration in the same breath as the measurement, and
+record it with the capture.** A premise that lives only in someone's memory of
+what they set two days ago is not a premise, and an experiment that flips a
+setting must include flipping it back as an explicit step.
+
+This is the same failure as Rule 11 wearing different clothes: the analysis was
+built by someone who already believed the answer, and the belief was load-bearing
+rather than checked. The capture provenance lines exist for exactly this, and
+`renderScaleMode` is not among them - it should be.
