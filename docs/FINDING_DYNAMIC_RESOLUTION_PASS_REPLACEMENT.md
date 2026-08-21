@@ -501,8 +501,7 @@ Log `vrIntermediateColorIn[i]->desc` next to `eyeWidthIn` in the same sessions.
   exceed the field — `2328` against `2054`.
 
 That confirms the mechanism is live rather than theoretical, costs one log line,
-and needs no extra session. **Not yet added** — it is a second instrument in a
-different function, and the build for `679a453a0` is already running.
+and needs no extra session. **Added** in commit `c88b8e490`.
 
 ### 11.6 Status
 
@@ -512,3 +511,36 @@ likely make the world look *smaller* with stale edge columns than closer. It is
 recorded because it is a real, Hot-Envelope-only state that a resource
 description cannot describe — which is the defect class this whole protocol is
 built around.
+
+### 11.7 Added to the instrument
+
+Commit `c88b8e490`. One line per eye per distinct state, on the same
+`vrDynResPassTrace` gate:
+
+```
+[VRIntermediate] eye={} field={}x{} out={}x{} gen={} |
+  colorIn={}x{} depth={}x{} mvec={}x{} reactive={}x{} transparency={}x{} colorOut={}x{}
+  | oversizedInput={}
+```
+
+Descriptions only, for both eyes and all five inputs plus the output, deduped by
+the whole tuple and capped. A stable session emits two lines and then nothing.
+
+Purely additive — 100 lines, no existing line altered — so with the setting off
+it cannot change behaviour.
+
+**How to read it:**
+
+| observation | means |
+|---|---|
+| RS-on: every input description **equals** the field | no slack is ever taken; the shipped path recreates as expected |
+| Hot-Envelope after a downward change: descriptions **exceed** the field, `oversizedInput=YES` | the mechanism is live; 109 unaudited consumers now matter |
+| Hot-Envelope: descriptions equal the field | the slack is not reached in practice, and §11 is theoretical only |
+
+The third row would be a clean negative result and is worth as much as the
+others: it would remove an entire class of suspicion for the price of one log
+line.
+
+**Build to use:** `c88b8e490`. It carries all three instruments — the
+dynamic-resolution pass decision, the per-eye viewport and scissor, and the
+intermediate-texture slack. `ebef7f442` and `679a453a0` are superseded.
