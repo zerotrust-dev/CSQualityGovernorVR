@@ -214,3 +214,68 @@ They are **priors, not findings**. The protocol scores every edge on its own
 evidence; a suspect that turns out to pass is a real result and gets recorded as
 one. What the table buys is that no boundary starts with an empty hypothesis
 set, and that 43 sites are already known to be off the envelope path.
+
+---
+
+### Verification pass · 2026-08-21 · phase 0 · PASS with two corrections
+
+New standing rule from Rik, applied from here on: **re-check what we created
+before every push, and prove each phase met its expected result before starting
+the next.** This is the first application.
+
+**Method.** Every number in the manifest was checked against the compiled
+`static_assert`s in `tests/vr_geometry_policy_test.cpp`, not against my own
+arithmetic. That ordering is deliberate: this project has twice produced
+confident numbers that were wrong — float32 scale labels written as `1.0f/1.3f`
+instead of `0.769230783`, and a PowerShell verification that produced five
+values one pixel high because `[int]` rounds where C++ truncates. The compiled
+assertion outranks any recomputation.
+
+| manifest value | compiled source | result |
+|---|---|---|
+| `ON-Q3` A 4656x2372 | `On(3).plan.allocationCombined` | match |
+| `ON-Q4` A/R 4108x2092 | `On(4).plan.allocationCombined` | match |
+| `OFF-Q4` R 4110x2092 | `Off(4).plan.renderCombined` | match |
+| `HE-Q3-Q4` A 4656x2372, R 4108x2092 | `On(3)` allocation, `On(4)` render | match |
+| Performance `R_eye` 1746x1778 | `On(5).plan.renderPerEye` | match |
+| UltraPerformance `R_eye` 1164x1186 | `On(6).plan.renderPerEye` | match |
+| Quality `A_eye` 2328x2372 | `On(3).plan.renderPerEye` | match |
+| the 2-pixel `OFF-Q4` vs `HE-Q3-Q4` width gap | 4110 vs 4108 | match |
+| display period 13.889 ms | 1000 / 72 = 13.8889 | match |
+
+**Correction 1 — the H1 prediction was recorded on one axis only.**
+
+The manifest carried `zoomX` alone. H1 predicts `A_eye / R_eye` **per axis**,
+and those axes do not agree:
+
+| preset | zoom X | zoom Y |
+|---|---:|---:|
+| Balanced | 1.1334 | 1.1338 |
+| Performance | 1.3333 | 1.3341 |
+| UltraPerformance | 2.0000 | 2.0000 |
+| Quality (diagonal) | 1.0000 | 1.0000 |
+
+The split comes from the even-forcing in `ScaleVRRenderDimension`, which lands
+differently on width and height. Recording only the horizontal would have
+thrown away a discriminator: **an observed zoom that is isotropic where the
+prediction is anisotropic is evidence against a pure duplicate expansion.**
+Both axes are now recorded and both will be scored.
+
+**Correction 2 — an ambiguous baseline reference.** `governorPlugin.commit`
+read `b7f365b`, which is the commit *before* the freeze, while the manifest
+itself lives in `388ff28`. Renamed to `commitBeforePhase0Freeze` with a note,
+so the record cannot be misread as claiming the manifest describes its own
+parent.
+
+Both corrections are new commits, not edits to the phase 0 entry above.
+
+### Phase 0 exit condition · answered
+
+> **Exit:** the protocol and manifest exist before any scored capture.
+
+**Met.** `PLAN_COMPOSITIONAL_DIFFERENTIAL_ORACLE.md` and `manifest.json` are
+committed at `388ff28`; no capture, no instrument and no rendering change
+exists. The stronger reading — that the manifest is *complete enough to be
+frozen* — is also met: every value that can exist at phase 0 is present and
+verified above, and every value that cannot is `null` with a `dueAtPhase`.
+Nothing is silently missing.

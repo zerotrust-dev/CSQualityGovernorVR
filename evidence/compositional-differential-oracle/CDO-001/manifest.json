@@ -53,7 +53,8 @@
     "governorPlugin": {
       "repo": "https://github.com/zerotrust-dev/CSQualityGovernorVR",
       "branch": "main",
-      "commit": "b7f365b"
+      "commitBeforePhase0Freeze": "b7f365b",
+      "note": "The commit this experiment started from. The phase 0 freeze itself is 388ff28 and 6bf63d1, which contain this manifest."
     }
   },
 
@@ -123,11 +124,12 @@
   "hypothesisH1": {
     "statement": "Skyrim already expands the complete R image to A, after which the submit-stage path crops an R-sized portion and asks the vendor to expand it to O.",
     "predictedZoom": "A_eye / R_eye per axis",
+    "anisotropyNote": "The prediction is per axis and is NOT isotropic at Balanced or Performance (1.1334 vs 1.1338; 1.3333 vs 1.3341), because the even-forcing in ScaleVRRenderDimension bites the two axes differently. That asymmetry is itself a discriminator: an observed zoom that is isotropic where the prediction is anisotropic is evidence against a pure A/R duplicate expansion. Both axes are therefore scored, never just the horizontal.",
     "predictions": [
-      { "activePreset": "Balanced",           "A_eye": [2328, 2372], "R_eye": [2054, 2092], "zoomX": 1.133 },
-      { "activePreset": "Performance",        "A_eye": [2328, 2372], "R_eye": [1746, 1778], "zoomX": 1.333 },
-      { "activePreset": "UltraPerformance",   "A_eye": [2328, 2372], "R_eye": [1164, 1186], "zoomX": 2.000 },
-      { "activePreset": "Quality (diagonal)", "A_eye": [2328, 2372], "R_eye": [2328, 2372], "zoomX": 1.000 }
+      { "activePreset": "Balanced",           "A_eye": [2328, 2372], "R_eye": [2054, 2092], "zoomX": 1.1334, "zoomY": 1.1338 },
+      { "activePreset": "Performance",        "A_eye": [2328, 2372], "R_eye": [1746, 1778], "zoomX": 1.3333, "zoomY": 1.3341 },
+      { "activePreset": "UltraPerformance",   "A_eye": [2328, 2372], "R_eye": [1164, 1186], "zoomX": 2.0000, "zoomY": 2.0000 },
+      { "activePreset": "Quality (diagonal)", "A_eye": [2328, 2372], "R_eye": [2328, 2372], "zoomX": 1.0000, "zoomY": 1.0000 }
     ],
     "falsifier": "The complete boundary ledger shows no preceding R to A expansion AND the capture immediately before the submit-stage source copy shows the complete logical eye field occupying exactly R_eye pixels. Seeing an R_eye field at a single boundary is not sufficient - it could have been expanded and resampled back earlier.",
     "decidedBy": "the fitted coordinate transform, never a visual statement"
