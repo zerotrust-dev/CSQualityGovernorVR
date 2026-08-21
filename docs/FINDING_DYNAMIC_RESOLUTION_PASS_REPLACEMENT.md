@@ -397,3 +397,118 @@ larger.
 
 **Supersedes:** the CI build for `ebef7f442` no longer matters; use the artifact
 for `679a453a0`, which contains both instruments.
+
+---
+
+## 11. A third gem: the vendor input is allowed to be oversized
+
+Found 2026-08-21 while CI built. Stock CSX, `Upscaling.cpp:38187`,
+`AreActiveVRIntermediateTexturesCompatible`.
+
+### 11.1 The asymmetry
+
+Two predicates decide whether the per-eye vendor resources can be reused:
+
+```cpp
+const auto coversInput = [allocationWidth, allocationHeight](...) {
+    return ... &&
+           a_texture->desc.Width  >= allocationWidth &&      // >=
+           a_texture->desc.Height >= allocationHeight &&
+           a_texture->desc.Format == a_format;
+};
+
+const auto matchesOutput = [=](...) {
+    return ... &&
+           a_texture->desc.Width  == a_outputWidth &&        // ==
+           ...
+};
+```
+
+**Inputs are accepted when they are at least large enough. Outputs must match
+exactly.** That asymmetry is deliberate and it is guarded by:
+
+```cpp
+if (!stableFSRInputBounds && vrIntermediateTextureGeneration != a_contractGeneration)
+    return false;
+```
+
+### 11.2 Why only Hot-Envelope can reach it
+
+In the shipped build a quality change bumps the contract generation, so that
+guard fires, everything is recreated, and the `>=` never has to be a `>`. It is
+dead slack.
+
+Hot-Envelope's entire purpose is to hold the contract generation stable across a
+quality change. So the guard passes, and a per-eye input texture created at boot
+Quality — `2328 x 2372` — is judged compatible for active Balanced, which needs
+`2054 x 2092`. **It is not resized.**
+
+The result is a texture whose description says `2328` holding a field that is
+`2054` wide, with the remaining 274 columns carrying whatever the previous
+quality left there. In the phase 1 contract model that is exactly:
+
+```
+resourceExtent = 2328 x 2372
+coverage       = { fieldExtent 2054 x 2092, covered 2054 x 2092 }
+```
+
+A perfectly legal state, and the one where a resource description tells you
+nothing about what the pixels are.
+
+### 11.3 And CS already knows about it — in one place
+
+This is the part that makes it interesting rather than alarming.
+`StretchSubmitStageEyeOutput` (`Upscaling.cpp:39217-39222`) passes **both**
+numbers to its shader:
+
+```cpp
+stretchData.inputSize        = { inputWidth, inputHeight };                 // the logical field
+stretchData.outputSize       = { outputWidth, outputHeight };
+stretchData.sourceTextureSize = { vrIntermediateColorIn[eyeIndex]->desc.Width,
+                                  vrIntermediateColorIn[eyeIndex]->desc.Height };  // the resource
+```
+
+That is coverage-aware code: it separates *how big the texture is* from *how much
+of it is the picture*. DLSS is handled the same way — `sl::Extent extentIn{ 0, 0,
+eyeWidthIn, eyeHeightIn }` describes the field, not the resource
+(`Streamline.cpp:1985`).
+
+So the oversized-input state is **modelled**, at least here. Two consumers get it
+right.
+
+### 11.4 The question that leaves
+
+If a vendor input texture can legitimately be larger than the field inside it,
+then **every** consumer of `vrIntermediateColorIn`, `vrIntermediateDepth`,
+`vrIntermediateMotionVectors`, `vrIntermediateReactiveMask` and
+`vrIntermediateTransparencyMask` has to know which of the two numbers it wants —
+and there are 109 references to those arrays across the upscaling sources.
+
+Two are demonstrably correct. The rest are unaudited, and this is the first
+configuration in which being wrong changes the answer.
+
+Note also that the slack applies to **depth and motion vectors** as well as
+colour. A motion vector field written for a `2054`-wide eye and read as though
+it filled `2328` would not crop the image — it would misregister reprojection,
+which is a different symptom class and worth keeping separate.
+
+### 11.5 The cheap confirmation
+
+Log `vrIntermediateColorIn[i]->desc` next to `eyeWidthIn` in the same sessions.
+
+- Under **RS-on**, description should equal the field: no slack is ever taken.
+- Under **Hot-Envelope after a downward quality change**, description should
+  exceed the field — `2328` against `2054`.
+
+That confirms the mechanism is live rather than theoretical, costs one log line,
+and needs no extra session. **Not yet added** — it is a second instrument in a
+different function, and the build for `679a453a0` is already running.
+
+### 11.6 Status
+
+Source-derived, unconfirmed. It does **not** by itself explain a zoom: both
+audited consumers handle the slack correctly, and an unhandled one would more
+likely make the world look *smaller* with stale edge columns than closer. It is
+recorded because it is a real, Hot-Envelope-only state that a resource
+description cannot describe — which is the defect class this whole protocol is
+built around.
