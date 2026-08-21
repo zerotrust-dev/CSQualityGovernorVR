@@ -266,3 +266,134 @@ localize the defect, and no result from it may be reported as confirming `H1`.
 This document will be updated with the measured result — including if the
 measurement contradicts both readings above, which is a real possibility and
 would be reported as such rather than reworded.
+
+---
+
+## 10. A second gem, and a contradiction it exposes
+
+Added 2026-08-21, from continued source study while CI built.
+
+### 10.1 The engine's own constants say the eyes are packed
+
+`package/Shaders/Common/FrameBuffer.hlsli:70-85` (stock CSX) clamps sampling to
+one eye:
+
+```hlsl
+// VR uses side-by-side stereo packing in the shared render target.
+bool isRight = screenPosition.x >= 0.5;
+float minFactor = isRight ? 1 : 0;
+minValue.x = 0.5 * (DynamicResolutionParams2.z * minFactor);
+float maxFactor = isRight ? 2 : 1;
+maxValue.x = 0.5 * (DynamicResolutionParams2.z * maxFactor);
+```
+
+with, from the same file's `packoffset(c86)` comment,
+`DynamicResolutionParams2.z = fDynamicResolutionWidthRatio - fDRClampOffset`.
+
+So each eye is clamped to **half of the ratio**, not to half of the target:
+
+```
+eye 0 -> DR U in [0,          0.5 * ratio)
+eye 1 -> DR U in [0.5 * ratio, ratio)
+```
+
+The two active fields are **adjacent, starting at zero** — packed. Those are
+constants the *engine* fills, so this is Skyrim's convention, not CS's choice.
+
+The rest of CS agrees. `PreparePerEyeInputs` (`Upscaling.cpp:38068`) takes the
+vendor input with `offsetXIn = (i == 1) ? eyeWidthIn : 0`, and the pass
+replacement copies `[0, combined render width)`. The whole "where" chain is
+internally consistent on packed.
+
+### 10.2 But a measurement in this repository says otherwise
+
+`Upscaling.h:257-262` records, as the justification for the current default:
+
+> **MEASURED 2026-08-18** ... under an active envelope the engine renders each
+> eye into its own half of the allocation and shrinks it within that half. It
+> does not repack. At quality 4 (ratio 0.882) eye 1 reads correctly from 2328
+> and is double-visioned from the packed 2054.
+
+2328 is `A_eye`; 2054 is `R_eye`. That is the allocation-separated layout, and
+it directly contradicts §10.1.
+
+### 10.3 Why Render Scale off decides between them
+
+The two conventions are **not** interchangeable in the shipped RS-off flow:
+
+| | eye 1 origin, RS-off Balanced (`A` = 6988, `R` = 4110) |
+|---|---:|
+| packed (`0.5 * ratio * A`) | **2055** |
+| allocation-separated (`A/2`) | **3494** |
+
+They differ by 1439 pixels. RS-off works and its image is correct, so whichever
+convention CS's shaders use there must be the engine's — and the shader clamp
+above uses packed. Under Render Scale **on** the two coincide exactly, because
+`A_eye == R_eye`; that is why nothing ever had to choose.
+
+So §10.1 and §10.2 cannot both describe the same mechanism.
+
+### 10.4 What we are not concluding
+
+Either the 2026-08-18 measurement was confounded, or the engine genuinely places
+eyes differently once render-scale mode has changed its notion of screen size.
+**We do not know which**, and this document will not guess.
+
+Two things are worth stating plainly, though:
+
+- The measurement's stated basis — *"reads correctly"* versus *"double-visioned"*
+  — is a **visual judgement**. `PLAN_COMPOSITIONAL_DIFFERENTIAL_ORACLE.md` §1
+  rules that out as an oracle for exactly this class of question, and this is a
+  good illustration of why: it was recorded as settled ("the default is now the
+  answer rather than a candidate") and it disagrees with the engine's constants.
+- It also **did not fix the image**. `README.md` §3 records that both origin
+  conventions were built and both failed. So whichever is right, the eye origin
+  is not what makes the world look too close.
+
+That last point matters for `H1`. If the entire "where" chain is consistent and
+still wrong, the defect is more likely to be a **"what"** problem — the
+coordinate state of the pixels rather than their placement — which is precisely
+what `H1` describes and what the contract model in phase 1 was built to express.
+
+### 10.5 The cheap way to settle it
+
+Record the **actual per-eye viewport and scissor** in effect during the scene
+render, alongside the plan's `A`, `R` and the published ratio. Metadata only,
+same class as the instrument in §7. `RSGetViewports` is already used elsewhere in
+this file, so the mechanism exists.
+
+That would replace a visual judgement with an integer, and it is the same three
+sessions — no extra headset round.
+
+**Note for the pending sessions:** `TryReplaceVanillaDynamicResolutionUpsample`
+does not read `vrHotEnvelopeEyeOrigin`, so sessions A, B and C remain valid for
+the question in §7. The contradiction above is a separate question that those
+sessions do not answer.
+
+### 10.6 Added to the instrument
+
+Commit `679a453a0`. The same deduped record now also carries:
+
+```
+viewports={N} vp0=[x{} y{} {}x{}] scissor0=[{},{}) | eyeOriginMode={}
+```
+
+`RSGetViewports` and `RSGetScissorRects`, read-only, taken before the function
+touches any state, gated on the same `vrDynResPassTrace` setting. No D3D state is
+modified and the cost is zero when off.
+
+**How to read it, for the worked case** (boot Quality, active Balanced,
+`A_eye` = 2328, `R_eye` = 2054):
+
+| observed `vp0` x-origin for the second eye | means |
+|---|---|
+| `2054` | **packed** — the engine's constants are right, the August measurement was confounded |
+| `2328` | **allocation-separated** — the measurement is right and the shader clamp does not describe this configuration |
+| a full-target viewport, one per frame | **inconclusive at this boundary** — the DR pass does not run per eye, and a scene-time observation is needed |
+
+The third row is a real outcome, not a failure. It would tell us this boundary
+cannot decide the question, which is worth knowing before building anything
+larger.
+
+**Supersedes:** the CI build for `ebef7f442` no longer matters; use the artifact
+for `679a453a0`, which contains both instruments.
