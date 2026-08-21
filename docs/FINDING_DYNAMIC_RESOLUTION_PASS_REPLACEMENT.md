@@ -544,3 +544,115 @@ line.
 **Build to use:** `c88b8e490`. It carries all three instruments — the
 dynamic-resolution pass decision, the per-eye viewport and scissor, and the
 intermediate-texture slack. `ebef7f442` and `679a453a0` are superseded.
+
+---
+
+## 12. A fourth gem, and it changes what we think we have been observing
+
+Found 2026-08-21. `Upscaling.cpp:1522` (`ResolveVRSubmitSourceRegion`) and the
+comment block above it.
+
+### 12.1 A normalized coordinate resolved against the wrong extent
+
+The submit path turns the OpenVR bounds into a pixel box. The two candidate
+origins for eye 1 are computed like this:
+
+```cpp
+const uint32_t allocationLeft = Util::NormalizedCoordinates::ResolvePixelBoundary(minU, sourceDesc.Width);
+const uint32_t packedLeft     = baseDepthOffsetX;  // sourceStereoLayout.eyes[eyeIndex].minX
+```
+
+and `ResolvePixelBoundary` is simply `round(clamp(u, 0, 1) * extent)`.
+
+`minU` comes from the OpenVR submit bounds, which are `u[0, 0.5]` and
+`u[0.5, 1]` — **a logical split of the eye pair**, and the game submits those
+whatever the active quality. `sourceDesc.Width` is a **physical resource
+extent**. `packedLeft` resolves the same split against `sourceEyeWidthIn`, a
+**logical field extent**.
+
+> A normalized coordinate is only meaningful against the extent it normalizes.
+> Resolving `0.5` against a resource width is correct **only when the field
+> fills the resource.**
+
+Which is exactly the two shipped cases and neither of ours:
+
+| flow | does the field fill the source? | so `0.5 * sourceDesc.Width` is |
+|---|---|---|
+| Render Scale on | yes, `A == R` | correct |
+| Render Scale off | yes, the submit source is full output | correct |
+| **Hot-Envelope** | **no — an `R` field inside an `A` resource** | **off by `(A_eye - R_eye)`** |
+
+At boot Quality / active Balanced that is 2328 against 2054 — 274 pixels.
+
+This is the same defect class as gems 1 to 3, but it is the first one found on
+the **submit** path, and the first where the two numbers are produced two lines
+apart from the same normalized input.
+
+### 12.2 The part that matters more
+
+Read the comment that sits above that code, written 2026-08-18:
+
+> Both candidates have now been built and both broke stereo: the packed origin
+> (eye 1 directly after eye 0's rendered region) was **cross-eyed**, the
+> allocation half was **flat/cardboard**, and each was correct only at the
+> envelope quality — which is the one case where they are the same pixel, so
+> neither run distinguishes anything.
+
+Now compare that with how the defect is described in `README.md` §3 and in
+every summary since:
+
+> the world looks **too close and flattened**
+
+**"Flattened" is the allocation-half arm's symptom.** `vrHotEnvelopeEyeOrigin`
+defaults to `1`, which *is* the allocation half. So every session run since
+18 August has had that arm active.
+
+We have been describing **the symptom of one experimental arm as though it were
+the symptom of Hot-Envelope.** The two are not the same claim, and the
+difference has been invisible because the default is not neutral — there is no
+"off" for this setting, only arm 0, arm 1 or a manual pixel value.
+
+That is not a small bookkeeping point. It means:
+
+- the headline description of the defect is **arm-conditioned**, and the
+  alternative arm produces a *different* symptom (cross-eyed, not flattened);
+- "both were built and both failed" is true, but they failed **differently**,
+  which is information that got compressed away into a single "it doesn't work";
+- any future measurement of the image must record which arm was active, or it
+  is not reproducible.
+
+### 12.3 What this does and does not resolve
+
+It does **not** tell us which origin is right. §10's contradiction stands: the
+engine's constants say packed, the August measurement says the allocation half,
+and now we also know the packed arm produced cross-eyes — a third data point
+that is *also* a visual judgement.
+
+It does sharpen the question. If the correct rule is "resolve a normalized bound
+against the extent it normalizes", then neither arm is obviously right either:
+`packedLeft` comes from a layout built on `sourceEyeWidthIn`, which is itself
+`presentationSourceHasFullOutputSize ? eyeWidthOut : eyeWidthIn` — so the
+"logical field extent" is a different number depending on which resource the
+submit path is looking at. **Whether that flag is correct under Hot-Envelope is
+now a question in its own right**, and it is answerable from the same telemetry.
+
+### 12.4 Consequence for the pending sessions
+
+None for the three questions in §7, §10 and §11 — those are metadata and the
+instrument already records `eyeOriginMode` alongside every decision, so each line
+is self-describing.
+
+But **no image judgement from these sessions may be reported without naming the
+arm**, and the honest framing from here is:
+
+> "Under `vrHotEnvelopeEyeOrigin = 1`, the world looks too close and flattened."
+
+not
+
+> "Hot-Envelope looks too close and flattened."
+
+### 12.5 Status
+
+Source-derived, unconfirmed. Recorded because it corrects a description this
+project has been repeating — including to the Community Shaders community — for
+three days.
