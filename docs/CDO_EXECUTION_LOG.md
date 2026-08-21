@@ -158,7 +158,7 @@ designed, no capture was taken. Phase 0 is a freeze, not a start.
 
 | repo | commit | content |
 |---|---|---|
-| CSQualityGovernorVR | *(see below)* | protocol, explainer, execution log, manifest, evidence skeleton |
+| CSQualityGovernorVR | `388ff28` | protocol, explainer, execution log, manifest, evidence skeleton, LF pinning |
 
 #### Cost
 
