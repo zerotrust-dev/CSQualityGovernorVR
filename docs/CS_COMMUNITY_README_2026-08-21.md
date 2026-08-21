@@ -1,0 +1,231 @@
+# CS Quality Governor VR, and the Hot-Envelope experiment
+
+**For the Community Shaders community.** Prepared 2026-08-21.
+
+Two things are described here. One works and is in daily use. The other does not
+work yet, and the honest account of *why* is probably the more useful half.
+
+Nothing here is a request that anything be adopted.
+
+---
+
+## In short
+
+**What we built and it works.** An external SKSE plugin that changes Community
+Shaders' DLSS quality preset *while you play*, so SkyrimVR holds a locked 72 Hz
+instead of you picking one preset and hoping it survives the worst scene in the
+game. It drives CSX only through ParticleTroned's plugin API.
+
+**What we want next, and have not got.** Render Scale Mode is worth **1.6–2.5 ms
+of GPU time** — measured, real image quality. But with it on, every quality
+change costs a **96–130 ms** stall, because changing quality changes texture
+dimensions. So today you choose: the headroom, or smooth changes. We want both.
+
+**The idea.** A lower quality's render dimensions already *fit inside* the
+targets allocated for a higher one. So make the boot quality an **upper bound**
+rather than a fixed point: everything at or below it becomes free to select
+during play, and only going above it needs a real reallocation.
+
+**What we proved.** It can be done — the boot latch holds across quality
+changes, **1 relatch per session against 171**, and the GPU saving survives:
+P95 GPU of 12.50 / 11.41 / 10.11 / 6.26 ms down the ladder.
+
+**What is wrong.** The *image* is wrong below the envelope quality — the world
+looks too close and flattened. Six attempts to fix it have failed. The defect is
+monocular, the submitted texture is whole, and the eye origin is not the cause.
+
+**What we are doing about it now.** We think CSX has three geometric concepts
+and names that distinguish only two, because in every shipped configuration two
+of them coincide — ours is the first thing that makes all three differ at once.
+So: one pure geometry planner as the single source of truth, then distinct
+*types* so the compiler enumerates every consumer including code no play session
+executes, then a semantic pass over that exhaustive list.
+
+**And what we already have for you regardless.** Two CSX defects, the DLSS
+accepted-input ranges CSX never queries, the five relatch triggers, and a
+one-pixel sizing asymmetry between the two VR paths — all in
+`FINDINGS-FOR-CS.md`, none of it dependent on our feature being a good idea.
+
+---
+
+## Start here
+
+| file | what it is |
+|---|---|
+| **`FINDINGS-FOR-CS.md`** | **Read this one.** Things we learned about CSX VR that hold whatever happens to our experiment — two defects, measured DLSS ranges, the five relatch triggers, a sizing asymmetry between the two VR paths |
+| **`STATUS.md`** | where we are in the plan right now, what the current phase produced, and what is deliberately unfinished |
+| **`REPOS.md`** | the three repositories, which branch is which, how to clone and build, and the preset-numbering trap |
+| **`docs/EXPLAINER_THREE_FLOWS_AND_RESEARCH_STRATEGY.md`** | **Non-specialist introduction.** VR upscaling, the three flows, the image defect, the objective research strategy, and why the work matters |
+| `docs/CSX_HOT_ENVELOPE_POC.md` | the original proposal to ParticleTroned, its measurements, and its results including the failures |
+| `docs/PLAN_GEOMETRY_TYPE_SPLIT.md` | the plan we are executing, and why the previous six attempts failed |
+| `docs/PLAN_COMPOSITIONAL_DIFFERENTIAL_ORACLE.md` | objective three-flow protocol: constrain and justify the Hot-Envelope contracts, localize the first divergent dependency frontier, then prove causality by controlled intervention |
+| `docs/NOTE_MENU_EYE_PATH_SPLIT.md` | the menu crossed-eye defect, in full |
+| `docs/CS_PLUGIN_API.md` | how an external plugin drives CSX's upscaler |
+| `docs/MEASUREMENT_METHOD.md` | how we measure, and the rules we adopted after getting it wrong |
+| `code/` | a patch against `CSX3.18`, an offline source snapshot, and the two new source files |
+| `evidence/` | a hashed run log backing the numbers |
+
+---
+
+## 1. The Governor: what it is, and that it works
+
+An external SKSE plugin that changes CSX's DLSS quality preset **during play**,
+to hold a locked framerate at the best image quality each scene allows.
+
+The problem it solves: a single preset has to be chosen for the worst scene you
+will meet, so most of the time you are running far below what the GPU could
+deliver. A governor spends that headroom instead of leaving it on the floor.
+
+It reads GPU time, compares it against the frame budget, and moves up or down the
+preset ladder. It drives CSX entirely through the plugin API ParticleTroned
+added — `GetVRUpscalingTransitionProfileDecision`, then
+`SetVRUpscalingTransitionProfileForMethod`. The preflight in particular saved a
+great deal of guesswork.
+
+What that is worth, measured over a sweep with Render Scale off: a
+**time-weighted pixel fraction of 0.216** while holding the frame budget, with
+frames beyond two display periods at **0.03%**. With Render Scale on the pixel
+fraction rises to **0.320** — which is the prize section 2 is about, and the
+reason we are not content with the working half.
+
+This part is finished and in daily use on a Pimax Crystal Super at 72 Hz. Its
+controller logic builds and tests in about a minute on Linux or Windows with no
+Skyrim SDK at all (`REPOS.md` §3).
+
+## 2. Hot-Envelope: what we want, and why
+
+With Render Scale Mode **on**, CSX replaces the runtime's recommended
+render-target size with `HMD size x quality scale`, so Skyrim allocates physical
+targets at the boot quality's resolution. That is worth **1.6–2.5 ms** of GPU
+headroom (measured, `FINDINGS-FOR-CS.md` §2.1) — real image quality, not noise.
+
+But because a quality change then changes texture *dimensions*, every change
+costs a **96–130 ms** relatch: `RecreateRenderTargetsForVRRenderScale`,
+`globals::ReInit()`, and a rebuild of every render-target-dependent feature.
+
+For a governor changing quality several times a minute, the two configurations
+are each half of what we want:
+
+| | Render Scale on | Render Scale off |
+|---|---|---|
+| time-weighted pixel fraction | **0.320** | 0.216 |
+| frames beyond two display periods | 1.35% | **0.03%** |
+| worst frame within 0.5 s of a change | 59 ms | **34 ms** |
+
+85% of those severe frames sit within 0.7 s of a preset change.
+
+**The observation we put to ParticleTroned** is narrow:
+
+> When the new quality is **lower** than the boot quality, its render dimensions
+> **fit inside the targets that are already allocated.** Nothing needs
+> reallocating; only the logical extent rendered into them needs to change.
+
+That would make the boot quality an **upper bound** rather than a fixed point.
+Everything at or below it becomes selectable during play; anything above it still
+relatches and can wait for a loading screen.
+
+## 3. Where it actually stands: not working
+
+**The relatch part works.** With the five triggers guarded, the boot latch holds
+— 1 latch per session against 171 — and the GPU saving is real: P95 GPU of
+12.50 / 11.41 / 10.11 / 6.26 ms across the ladder, at least as good as the
+boot-latched equivalent.
+
+**The image is wrong.** Below the envelope quality the world looks too close and
+flattened into layers. Six attempts to fix it have failed, each locally correct
+and globally wrong.
+
+What we have established, mostly by ruling things out:
+
+- the submitted eye texture is **whole**, not cropped — active across its full
+  width, and the OpenVR output bounds are correct;
+- the defect is **monocular** — with either eye closed the image is equally
+  wrong, which rules out every stereo-relationship explanation we had;
+- it is correct at exactly one preset: the envelope quality, where allocation and
+  render extent are the same number;
+- the eye origin is **not** the cause. Both self-consistent conventions were
+  built and both failed.
+
+## 4. Why we think it is a naming problem
+
+CSX has three geometric concepts and, in the resolution plan, names that only
+distinguish two — because in every shipped configuration two of the three
+coincide:
+
+| configuration | allocation | render extent | output |
+|---|---|---|---|
+| Render Scale **off** | = display | ratio x display | display |
+| Render Scale **on** | quality-sized | **= allocation** | display |
+| **Hot-Envelope** | boot-quality-sized | **< allocation** | display |
+
+In both shipped modes you can say "the render size" and be unambiguous.
+Hot-Envelope is the first configuration in which all three differ at once, so
+every consumer that asks the old question gets an answer that used to be right.
+
+That is not a criticism of CSX. The conflation is invisible and harmless in
+every configuration that ships. Our feature is the first thing to make it
+matter — which is also why this may turn out to be a change only the author can
+sensibly make, and we would regard that as a legitimate outcome.
+
+**What we are doing about it** (`docs/PLAN_GEOMETRY_TYPE_SPLIT.md`):
+
+1. one pure, dependency-free geometry planner, derived from source and verified
+   by compile-time tests across all three flows, the full 7x7 boot x active
+   matrix, and seven display sizes;
+2. distinct types for the three geometries, so the *compiler* enumerates every
+   consumer — including code no play session ever executes;
+3. a semantic pass over that exhaustive list.
+
+If that finds no wrong consumer, we will have established with much better
+coverage than any play session that the defect lies elsewhere — in resource
+lifecycle, vendor state, or stereo submission. We would consider that worth the
+same effort as a fix, and we would say so.
+
+## 5. How we try to work
+
+Because it is relevant to how much weight to give any of this:
+
+- **Corrections are recorded, not quietly fixed.** Several are in these
+  documents, including a headline finding we had to withdraw and a measurement
+  we got backwards.
+- **Pre-registration.** Test criteria are written before the run, so a result
+  cannot be chosen afterwards.
+- **Independent review.** A second agent reviews findings and plans and has
+  caught real errors in every revision.
+- **We do not report what we have not measured.** Where something is inferred
+  rather than observed, it says so.
+
+## 6. The code
+
+**Public branch** — the authoritative copy, with full history and CI:
+
+```
+https://github.com/zerotrust-dev/skyrim-community-shaders
+branch csx318-hot-envelope-diag
+```
+
+`code/hot-envelope-vs-CSX3.18.patch` — every change as a readable diff, roughly
+1,900 lines across 8 files, against tag `CSX3.18` (`2051e2ae`, CSX 3.18-VR,
+build 11). Apply to a clean checkout of that tag.
+
+`code/hot-envelope-source-snapshot.zip` — the whole source tree at the branch
+tip, for reading offline. No git history: our working clone is shallow, so a
+self-contained bundle was not possible. Use the GitHub branch if you want the
+commit-by-commit story; `code/commits.txt` lists it.
+
+`code/VRGeometryPolicy.h` and `code/vr_geometry_policy_test.cpp` — the pure
+planner and its compile-time test, the most self-contained and probably most
+interesting part to read.
+
+**Please treat the branch as evidence, not as a patch.** It contains
+diagnostics, characterization tests that assert current behaviour including known
+contract violations, and one experimental setting we would not ship. It is
+public so the findings are checkable, not because it is ready.
+
+## 7. Environment
+
+Pimax Crystal Super at 3494 x 3558 per eye, 72.000 Hz, RTX 5090, DLSS,
+OpenComposite Unleashed 4.2.3, MGO 4.0 beta RC3, CSX 3.18-VR build 11.
+
+One machine, one headset. The size of the prize will differ elsewhere, and on a
+GPU where fixed costs dominate it may differ a lot.

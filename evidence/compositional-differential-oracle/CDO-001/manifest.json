@@ -1,0 +1,205 @@
+{
+  "experimentId": "CDO-001",
+  "title": "Compositional differential oracle for Hot-Envelope",
+  "opened": "2026-08-21",
+  "status": "phase-0-complete",
+
+  "immutability": {
+    "rule": "This manifest must not be edited after the first Hot-Envelope capture (protocol phase 0 step 6). Corrections are appended to amendments with a timestamp and reason.",
+    "frozenAt": null,
+    "amendments": []
+  },
+
+  "protocol": {
+    "document": "docs/PLAN_COMPOSITIONAL_DIFFERENTIAL_ORACLE.md",
+    "sha256": "683aa8f393ccdbeaa23fb90fa80b863ffe04d31ddd003f977679b4c71f003eb2",
+    "companions": {
+      "docs/EXPLAINER_THREE_FLOWS_AND_RESEARCH_STRATEGY.md": "41caa3e475c958c8115ef7a756d902b3363af985ba734909001f395b0aae76ae",
+      "docs/PHASE_1A_SITE_TABLE.md": "27c2b5facd6caf3a333dfdd78a12897887a5b271cd7d377eff1d92dbd3a99e61",
+      "docs/PLAN_GEOMETRY_TYPE_SPLIT.md": "add04d58549ff16bc618a4688120b0c59eacee3e770016163371d87d4ba56e7f"
+    },
+    "executionLog": "docs/CDO_EXECUTION_LOG.md"
+  },
+
+  "baseline": {
+    "upstream": {
+      "repo": "https://github.com/ParticleTroned/skyrim-community-shaders",
+      "tag": "CSX3.18",
+      "commit": "2051e2aead1b2bb2b03faa421201376e8bc84fe0",
+      "version": "CSX 3.18-VR",
+      "buildNumber": 11
+    },
+    "diagnostic": {
+      "repo": "https://github.com/zerotrust-dev/skyrim-community-shaders",
+      "branch": "csx318-hot-envelope-diag",
+      "commit": "2eaf90ddc4a8c2e8f0ab2f62f183c4a152570504",
+      "pullRequest": 5,
+      "ciRun": "https://github.com/zerotrust-dev/skyrim-community-shaders/actions/runs/32457806725",
+      "ciVerified": "2026-08-21",
+      "ciJobsRequired": ["Build (PR) / Build plugin and addons (vs2026)"],
+      "ciKnownAcceptedFailure": {
+        "job": "Build (PR) / Validate shader compilation (Flatrim)",
+        "reason": "Lighting.hlsl:953 includes WetnessEffects/WetnessEffects.hlsli under an elif on WETNESS_EFFECTS; that job sets the define without putting the feature shader directory on the include path. Wetness Effects is in AIO_NON_SHIPPED_FEATURE_PACKAGES. Pre-existing upstream, unrelated to this work.",
+        "acceptedOnlyIf": "byte-for-byte the same failure; any new failure blocks the phase"
+      },
+      "stateAtBaseline": [
+        "VRGeometryPolicy::Derive is authoritative for render-scale allocation and render extent",
+        "engineRenderSize and engineAllocationSize are mutually non-convertible types (phase 1a, behaviour-null)",
+        "the planner is NOT authoritative for the RS-off render extent - see parked item P-1",
+        "finalOutputSize is still assigned directly rather than derived",
+        "BindResources() is not implemented"
+      ]
+    },
+    "governorPlugin": {
+      "repo": "https://github.com/zerotrust-dev/CSQualityGovernorVR",
+      "branch": "main",
+      "commit": "b7f365b"
+    }
+  },
+
+  "dllUnderTest": {
+    "sha256": null,
+    "dueAtPhase": 3,
+    "note": "Hashed after installation from the exact CI artifact. No locally compiled DLL is admissible as evidence (protocol section 15)."
+  },
+
+  "analyzer": {
+    "commit": null,
+    "artifactSha256": null,
+    "configurationSchema": null,
+    "testResult": null,
+    "dueAtPhase": "1A"
+  },
+
+  "acceptedCandidateTransforms": {
+    "value": null,
+    "dueAtPhase": 1,
+    "note": "Compiled and golden-valued in phase 1, before any runtime data is seen."
+  },
+
+  "edgeContracts": {
+    "file": "edge-contracts.json",
+    "present": false,
+    "dueBeforePhase": 5,
+    "blockers": ["P-1"],
+    "note": "Immutable once added (protocol section 8.4). Every scored edge needs a normative source, formula, units, sample rules, exact checks, tolerances, and PASS/FAIL/INCONCLUSIVE conditions."
+  },
+
+  "testMatrix": {
+    "localization": [
+      { "run": "ON-Q3",    "renderScale": "on",  "hotEnvelope": false, "boot": "Quality",  "active": "Quality",  "purpose": "allocation reference for the envelope" },
+      { "run": "ON-Q4",    "renderScale": "on",  "hotEnvelope": false, "boot": "Balanced", "active": "Balanced", "purpose": "active render geometry reference" },
+      { "run": "OFF-Q4",   "renderScale": "off", "hotEnvelope": false, "boot": "display",  "active": "Balanced", "purpose": "working dynamic sub-rect reference" },
+      { "run": "HE-Q3-Q3", "renderScale": "on",  "hotEnvelope": true,  "boot": "Quality",  "active": "Quality",  "purpose": "Hot-Envelope diagonal control" },
+      { "run": "HE-Q3-Q4", "renderScale": "on",  "hotEnvelope": true,  "boot": "Quality",  "active": "Balanced", "purpose": "first localization case" }
+    ],
+    "localizationNote": "ON-Q3 and ON-Q4 are separate boots or separately verified relatches, never two transient dwells in one unsettled session.",
+    "severityConfirmation": [
+      { "run": "ON-Q5",    "boot": "Performance",      "active": "Performance",      "purpose": "render reference" },
+      { "run": "HE-Q3-Q5", "boot": "Quality",          "active": "Performance",      "purpose": "test predicted A/R dependence" },
+      { "run": "ON-Q6",    "boot": "UltraPerformance", "active": "UltraPerformance", "purpose": "render reference, vendor caveat" },
+      { "run": "HE-Q3-Q6", "boot": "Quality",          "active": "UltraPerformance", "purpose": "test predicted 2x dependence, vendor caveat" }
+    ],
+    "severityNote": "Run only after the first-divergence frontier is identified at Balanced. Performance and UltraPerformance retain their documented vendor-range caveat and confirm a trend only; no result from them explains Balanced (discipline rule 13).",
+    "startsAtBalanced": "Balanced is the smallest non-zero envelope divergence and stays inside the measured DLSS ranged-mode contract, so the known Performance and UltraPerformance vendor-range violations cannot be used to explain a defect that exists earlier."
+  },
+
+  "expectedGeometry": {
+    "displayPerEye": [3494, 3558],
+    "displayCombined": [6988, 3558],
+    "refreshHz": 72.0,
+    "displayPeriodMs": 13.889,
+    "cases": [
+      { "run": "ON-Q3",    "A": [4656, 2372], "R": [4656, 2372], "O": [6988, 3558] },
+      { "run": "ON-Q4",    "A": [4108, 2092], "R": [4108, 2092], "O": [6988, 3558] },
+      { "run": "OFF-Q4",   "A": [6988, 3558], "R": [4110, 2092], "O": [6988, 3558] },
+      { "run": "HE-Q3-Q3", "A": [4656, 2372], "R": [4656, 2372], "O": [6988, 3558] },
+      { "run": "HE-Q3-Q4", "A": [4656, 2372], "R": [4108, 2092], "O": [6988, 3558] }
+    ],
+    "unitsNote": "Combined stereo, for compactness. Runtime and analyzer records must carry the CombinedStereo / PerEye(i) / ArraySlice(i,s) tag; a combined number is a logical two-eye extent, not a claim about physical layout.",
+    "arithmeticNote": "The 2-pixel width difference between OFF-Q4 (4110) and HE-Q3-Q4 (4108) is known arithmetic, not the defect: RS-off scales combined width and truncates; RS-on and Hot-Envelope scale per eye and force even. Comparisons use each flow authoritative integer extent and compare normalized logical coordinates. The two paths are never forced to one value."
+  },
+
+  "hypothesisH1": {
+    "statement": "Skyrim already expands the complete R image to A, after which the submit-stage path crops an R-sized portion and asks the vendor to expand it to O.",
+    "predictedZoom": "A_eye / R_eye per axis",
+    "predictions": [
+      { "activePreset": "Balanced",           "A_eye": [2328, 2372], "R_eye": [2054, 2092], "zoomX": 1.133 },
+      { "activePreset": "Performance",        "A_eye": [2328, 2372], "R_eye": [1746, 1778], "zoomX": 1.333 },
+      { "activePreset": "UltraPerformance",   "A_eye": [2328, 2372], "R_eye": [1164, 1186], "zoomX": 2.000 },
+      { "activePreset": "Quality (diagonal)", "A_eye": [2328, 2372], "R_eye": [2328, 2372], "zoomX": 1.000 }
+    ],
+    "falsifier": "The complete boundary ledger shows no preceding R to A expansion AND the capture immediately before the submit-stage source copy shows the complete logical eye field occupying exactly R_eye pixels. Seeing an R_eye field at a single boundary is not sufficient - it could have been expanded and resampled back earlier.",
+    "decidedBy": "the fitted coordinate transform, never a visual statement"
+  },
+
+  "settlePeriod": {
+    "stableFrames": 120,
+    "historyResetClearFrames": 120,
+    "rule": "Fixed before capture. Must not be shortened because a result looks stable."
+  },
+
+  "frameAdmission": [
+    "no loading or menu context",
+    "no relatch pending or in progress",
+    "no vendor reset pending",
+    "no device-loss or fallback path",
+    "requested quality equals readback",
+    "A, R, O unchanged for at least 120 frames",
+    "history reset clear for at least 120 frames",
+    "both eyes present in one compositor cycle",
+    "one plan hash and one contract generation across all joined records",
+    "provider reset completed through the fixed warm-up sequence"
+  ],
+
+  "calibrationRule": {
+    "principle": "Thresholds are calibrated only from each instrument own working-flow controls and frozen before Hot-Envelope is scored. Passive and world-to-B2 thresholds freeze in phase 5; BF marker thresholds are calibrated independently and freeze in phase 7.",
+    "steps": [
+      "at least four independently admitted compositor cycles per control, over at least two game launches",
+      "assign complete cycles - not points from one image - to calibration and holdout before analysis",
+      "candidate error is the maximum reprojection displacement over every decoded corner, center, quarter point and image corner",
+      "image tolerance = max(2 pixels, 2 x calibration-control P99 reprojection error)",
+      "at least 12 decoded markers, all four quadrants represented, analyzer synthetic-fixture confidence gate passing",
+      "all held-out controls must pass unchanged",
+      "exact metadata, integer seam and containment checks stay at zero tolerance",
+      "freeze before scoring Hot-Envelope"
+    ],
+    "tieRule": "If two candidate transforms both fall inside tolerance the result is INCONCLUSIVE, not whichever is closer.",
+    "frozenValues": { "passiveAndWorldToB2": null, "fiducialMarkers": null }
+  },
+
+  "runRejectionRules": [
+    "build commit or DLL hash absent or wrong",
+    "settings not read from disk and archived in the same session",
+    "governor or another owner changed quality",
+    "a menu or loading context overlaps the scored frame",
+    "requested quality does not equal readback",
+    "a relatch, vendor reset, fallback, device loss or transition protection is active",
+    "the settle window is incomplete",
+    "either eye missing, or the eyes have different compositor-cycle policy",
+    "joined boundaries use different plan hashes, contract generations or history generations",
+    "any source capture occurs before its producer completed",
+    "resource identity or subresource ambiguous",
+    "passive telemetry changed the control path",
+    "resource capture or fiducial instrumentation changed the control path, resource contract, provider state or history sequence",
+    "analyzer confidence below its frozen threshold",
+    "a manual observation is needed to decide between candidate transforms"
+  ],
+  "rejectionHandling": "An invalid run is archived and labelled REJECTED with its reason. It is never silently deleted, and never reused for a weaker claim.",
+
+  "nonSuccessOutcomes": [
+    "MISSING_BOUNDARY",
+    "MISSING_STATE",
+    "INVALID_ORACLE",
+    "DIAGNOSTIC_INTERFERENCE",
+    "ENDPOINT_NOT_OBJECTIVELY_ESTABLISHED",
+    "INCONCLUSIVE_CONTRACT",
+    "OPAQUE_UNCAPTURABLE",
+    "OPAQUE_TEMPORAL_STATE"
+  ],
+  "nonSuccessRule": "All boundaries valid while the endpoint is objectively invalid means at least one theorem assumption is false. That is reported as one of the above, never as geometry is correct.",
+
+  "scopeLimit": "Without an external compositor boundary B8, this protocol proves the path only through the OpenVR texture and bounds submitted at B7. A headset symptom beyond B7 stays inside the compositor and runtime opaque block.",
+
+  "openParkedItems": ["P-1", "P-2"]
+}

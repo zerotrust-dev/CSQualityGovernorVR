@@ -226,3 +226,39 @@ This is the same failure as Rule 11 wearing different clothes: the analysis was
 built by someone who already believed the answer, and the belief was load-bearing
 rather than checked. The capture provenance lines exist for exactly this, and
 `renderScaleMode` is not among them - it should be.
+
+**13. Never write an API detail from memory. Read it from the source.**
+
+Field names, function signatures, enum values, struct layouts, units, argument
+order: look them up in the vendored headers, the repository, or the project's own
+documents, every time. Not "check when unsure" - the failure mode is *feeling*
+sure and being wrong, which by definition does not announce itself.
+
+This is not a general caution about carefulness. It is an economic rule. A CI
+build here costs 38 minutes and a game test costs a session of Rik's evening, so
+a single wrong field name spends an hour to learn something a two-second `grep`
+would have said. That trade is never worth taking, however confident the guess
+feels.
+
+It nearly happened on 2026-08-17. `sl::DLSSOptimalSettings` was written from
+memory - seven field names, a call signature and a result enum, none of them
+verified, because the Streamline submodule is not checked out in the working
+tree. Rik asked for a review before the push. The header existed on disk in
+another checkout:
+
+    find /c/Data -name "sl_dlss.h"
+
+All seven names happened to be right. The result enum was *not* what the header's
+own doc comment claimed (`sl::ResultCode::eOk` in the comment,
+`sl::Result::eOk` in the code), and `UINT32_MAX` would have needed an include
+that `PerfMode.cpp` does not have. Two compile failures avoided by looking, in a
+file where confidence had been high.
+
+**When the answer genuinely cannot be found** - no header, no documentation, no
+prior art in the repository - that is not licence to guess. Say so plainly and
+ask Rik. An unanswered question costs one message; a guessed answer costs a build,
+a session, and the credibility of every number that follows it.
+
+The same applies to our own history. We document every step precisely so that
+nothing has to be recalled: if a decision, a measurement or a configuration is
+being asserted, it is in these documents and it can be read.

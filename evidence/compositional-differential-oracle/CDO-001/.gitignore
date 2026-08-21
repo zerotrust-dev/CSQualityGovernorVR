@@ -1,0 +1,5 @@
+# Raw resource captures are large binaries. Their hashes live in SHA256SUMS,
+# which is tracked, so a capture can be proven authentic without storing it here.
+runs/*/captures/
+*.dds
+*.raw

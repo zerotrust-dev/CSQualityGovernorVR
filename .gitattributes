@@ -1,0 +1,8 @@
+# core.autocrlf is true on this machine, so without this a clone would receive
+# CRLF and every recorded SHA-256 would fail to reproduce. Protocol and evidence
+# hashes are load-bearing (PLAN_COMPOSITIONAL_DIFFERENTIAL_ORACLE.md section 14),
+# so documents and evidence are pinned to LF in the working tree as well as in
+# the object store.
+*.md   text eol=lf
+*.json text eol=lf
+SHA256SUMS text eol=lf

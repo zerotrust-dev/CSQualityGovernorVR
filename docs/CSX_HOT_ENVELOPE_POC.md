@@ -109,15 +109,52 @@ needs a real relatch and can be deferred to a loading screen.
 ### Why we no longer think DLSS's dynamic range blocks this
 
 We raised this in our first message and want to retract it. It would matter if
-one DLSS context had to accept a 3× span of input sizes. CSX does not do that —
-it keeps a viewport context per `qualityMode + dlssPreset`, so each context is
-created at its own input resolution and `extentIn` matches its optimum. Streamline
-tags resources with extents precisely so the input may be a sub-rect of a larger
-texture; texture size and DLSS input size are independent.
+one DLSS context had to accept a 3× span of input sizes. CSX does not do that:
+each quality is configured into a viewport slot at its own input resolution, so
+`extentIn` matches that slot's optimum. Streamline tags resources with extents
+precisely so the input may be a sub-rect of a larger texture; texture size and
+DLSS input size are independent.
 
 Empirically: with Render Scale Mode on we routinely see UltraQuality, Quality,
-Balanced, Performance and UltraPerformance all working. Those are five contexts
-at five input sizes. The DLSS side already does what this needs.
+Balanced, Performance and UltraPerformance all working, each at its own input
+size. The DLSS side already does what this needs.
+
+**A correction to an earlier draft of this section.** We first wrote that CSX
+"keeps a viewport context per `qualityMode + dlssPreset`", which overstated it.
+`vrDLSSViewportSlots` is `[kVRDLSSViewportRoleCount][kVRDLSSViewportSlotCount]`
+with `kVRDLSSViewportSlotCount = 2` — a **two-entry LRU cache per role**, keyed
+by `(qualityMode, dlssPreset)` and evicted on `lastUse`. Against four or five
+presets in rotation that evicts and recreates on most changes. The conclusion
+above survives, because each selected quality still gets configured at its own
+input size; but the reason we gave for it was wrong, and the eviction is a real
+per-change cost we had attributed to the relatch alone.
+
+### What the DLSS runtime actually accepts
+
+`slDLSSGetOptimalSettings` is loaded by CSX but never called, so we called it
+and logged the answer. Measured on this machine, 3494×3558 per eye:
+
+| mode | optimal | accepted input range |
+|---|---|---|
+| `eMaxQuality` | 2329×2372 | **1747×1779 .. 3494×3558** |
+| `eBalanced` | 2027×2064 | 1747×1779 .. 3494×3558 |
+| `eMaxPerformance` | 1747×1779 | 1747×1779 .. 3494×3558 |
+| `eUltraPerformance` | 1165×1186 | **1165×1186 .. 1165×1186** |
+
+Every mode that has a range accepts down to exactly **half the output** in each
+axis, and `eUltraPerformance` has no range at all.
+
+Against our ladder — Quality 2329, Balanced 2054, Performance 1747,
+UltraPerformance 1165 — a single `eMaxQuality` context can serve **Quality,
+Balanced and Performance** by varying the tagged extent, with Performance
+sitting exactly on the floor. UltraPerformance cannot join them.
+
+So the honest answer to "can the reset be removed" is *for most of the ladder*.
+Two contexts — one spanning the top three rungs, one for UltraPerformance —
+reduce context changes from one per quality change to one per crossing of a
+single boundary. That happens to equal the existing slot count, but the two
+facts are unrelated: `kVRDLSSViewportSlotCount` is an LRU capacity, not a
+designed split. We mention the coincidence only so nobody reads it as evidence.
 
 ---
 
@@ -226,7 +263,113 @@ answer is as useful to us as a patch.
 
 ---
 
-## 8. Provenance
+## 8. Results
+
+Two sessions, both on MGO 4.0 beta RC3, envelope boot-latched at Quality
+(`qualityMode 3`, 3494×3558 → 2328×2372 per eye), `renderScaleMode` and
+`vrHotEnvelope` both read back from disk after the run.
+
+### Run 1 — relaxing `restartRequired` alone (`cff819e3`)
+
+Changed `qualityModeMatches` into `qualityModeMatches || renderSizeFitsAllocation`
+in `VRPerfModeRestartState::RequiresRestart`, which is where we assumed the
+latched contract was enforced.
+
+**No effect. 28 boot latches in four minutes**, one per quality change, each
+recreating the allocation at the new quality's size:
+
+```
+[20:28:47] Boot-latched kDLSS quality 3 ... -> render 2328x2372 (generation 1).
+[20:28:49] Boot-latched kDLSS quality 6 ... -> render 1164x1186 (generation 2).
+[20:28:59] Boot-latched kDLSS quality 5 ... -> render 1746x1778 (generation 3).
+                                    ... through generation 28
+```
+
+The user-visible symptom was new and, in hindsight, the tell: quality changes
+stopped being instant and showed **a few heavily pixelated frames** first.
+That is the sub-rect path engaging in the window between the change and the
+relatch catching up — rendering into part of a target still sized for the old
+quality, then being overwritten. The patch had inserted a slower path in front
+of the existing one rather than replacing it.
+
+### The audit: five triggers, not one
+
+`restartRequired` turns out to drive the *menu's* restart prompt. Four further
+paths force the relatch on a quality change and **none of them consults it**:
+
+| # | site | what it does |
+|---|---|---|
+| 1 | `PerfModeRestartState.h` `RequiresRestart` | the restart-required flag |
+| 2 | `Upscaling.cpp` `ShouldStageVRRenderScaleTransition` | stages a transition whenever the mode is latched |
+| 3 | `Upscaling.cpp` `ApplyCSMenuUpscalingTransition` | calls `RequestPerfModeRenderTargetRecreate` directly |
+| 4 | `Upscaling.cpp` `ApplyPendingVRUpscalingTransition` | same, under "VR render-scale profile change" |
+| 5 | `Upscaling.cpp` `IsVRRenderScalePhysicalContractConverged` | defines convergence as `boot.qualityMode == requested` |
+
+Number 5 is the load-bearing one. It asks whether the physical targets support
+the requested quality, and answers with equality — which was exactly right for
+as long as render size always equalled allocation size. Under an envelope they
+differ by design, so the contract reports un-converged permanently, which makes
+`activeMatchesRequest` false in `SetPerfModeRequested` and reaches an
+**unconditional** recreate. Guarding the other four changes nothing while this
+one stands.
+
+### Run 2 — all five behind the fits-check (`3912b783`)
+
+**The envelope held.** Eleven latches, all `quality 3`, all inside the first
+three seconds of startup, and **none for the remaining four minutes** across
+every quality change the governor and the CS menu made:
+
+```
+[10:27:48] Boot-latched kDLSS quality 3 ... -> render 2328x2372 (generation 1).
+                                    ... through generation 11 at 10:27:51
+                                    (nothing further)
+```
+
+Against 28 relatches in the previous run, on the same route with the same
+controller. **The boot quality can be made an upper bound rather than a fixed
+point, and the render-target allocation will hold across quality changes.**
+
+### And the reason that is not yet enough
+
+Everything else got worse, from a single stranded flag.
+
+A quality change legitimately marks the vendor resources dirty — the DLSS input
+extent really has changed. But `MarkVendorRuntimeResourcesReady` is only ever
+reached **inside the relatch routine**, keyed to `relatchContractGeneration`
+(`Upscaling.cpp` ~25943, ~26009, ~26016). Remove the relatch and nothing ever
+marks them ready. `pendingDLSSReset` latches on, and because
+`GetVRUpscalingApplyBlockReasonsForAPI` folds it into `relatchPending`, every
+subsequent request is refused:
+
+```
+[governor] giving up on Performance after 30.5s blocked (RelatchPending)
+[governor] giving up on Balanced    after 30.5s blocked (RelatchPending)
+[VRRenderScale] Deferred request id=26 origin=CSMenu until the unresolved
+                physical recovery publishes coherently.
+```
+
+Those `CSMenu` deferrals are the user's own clicks in the Community Shaders
+menu. One flag blocked the external API and the menu alike, DLSS was never
+reconfigured for the new extent so the image was upscaled from the wrong
+region, and the controller never got past its first change.
+
+### What we take from this
+
+The relatch is not only how the allocation is resized. It is also **the only
+path by which vendor resources become ready again.** That coupling, not the
+boot latch itself, is what currently prevents the envelope from moving — and it
+is not visible from outside the renderer. It is the part of this exercise we
+would most want you to have.
+
+We are continuing on a separate branch, where the aim is to create the DLSS
+feature once with dynamic-resolution support spanning the envelope, so an
+extent change needs no teardown and the reset dance disappears rather than
+being routed around. Results will be appended here on the same terms as these,
+whichever way they go.
+
+---
+
+## 9. Provenance
 
 Source identified by tag `CSX3.18` = `2051e2ae`, `CSX_VERSION "3.18-VR"`,
 `CSBuildNumber = 11` — matching the build number our plugin reads at runtime, and
