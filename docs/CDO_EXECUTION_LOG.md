@@ -279,3 +279,146 @@ exists. The stronger reading — that the manifest is *complete enough to be
 frozen* — is also met: every value that can exist at phase 0 is present and
 verified above, and every value that cannot is `null` with a `dueAtPhase`.
 Nothing is silently missing.
+
+---
+
+### Phase 1 — the pure pipeline contract model · 2026-08-21 · awaiting CI
+
+**Protocol requirement (phase 1):** keep `VRGeometryPolicy::Derive`
+authoritative and characterize rather than replace the RS-off producer; add a
+dependency-free pipeline contract model for tagged origins, half-open extents,
+resource layouts and affine transforms; encode the Raw and Expanded paths from
+section 7.1; add tests for all seven qualities, the 7x7 matrix, packed and
+allocation-separated stereo, per-eye and array-slice resources, transform
+composition, the predicted duplicate-scale matrices, and invalid containment
+and generation combinations; ensure no production consumer reads it yet.
+**Exit condition:** the finite candidate transforms compile and their golden
+values are fixed before runtime data is seen.
+
+**Delivered.** `src/Features/Upscaling/VRPipelineContract.h` (520 lines) and
+`tests/vr_pipeline_contract_test.cpp` (460 lines, 70 `static_assert`s), plus
+one CMake registration. **No production file was touched** — `git diff` against
+`Upscaling.cpp`, `Upscaling.h`, `Streamline.cpp` and `FidelityFX.cpp` is empty,
+and nothing outside the test includes the new header.
+
+#### The design decision that matters
+
+The model **takes per-eye extents as inputs and derives no size of its own.**
+Every extent in the test comes from `VRGeometryPolicy::Derive`. That is not a
+layering preference: duplicating the quality-scale table is precisely how this
+project previously produced float labels wrong in the fourth decimal, and a
+contract model that could disagree with production about a size would be worse
+than none.
+
+Coverage is carried as **exact integers** and compared as **exact rationals by
+cross-multiplication**. Nothing is divided, so there is no decimal to get wrong.
+Floats appear only in the analyzer-facing affine form, and that form is derived
+from the integer model rather than maintained beside it.
+
+#### What the model adds beyond size
+
+A boundary is described by three things, never by a size alone:
+
+```
+resourceExtent   how big          - a capture confirms this directly
+activeRegion     where            - a capture confirms this directly
+coverage         which part of the complete logical eye field those pixels are
+```
+
+The third is the one a resource description cannot answer, and the one six
+failed attempts kept guessing. `FieldCoverage{ fieldExtent, covered }` states it
+exactly: a raw field in an A-sized resource is `field == R, covered == R`; a
+field already resampled to A is `field == A, covered == A`; **an R-sized crop of
+a resampled field is `field == A, covered == R`** — and that third state is
+entirely legal in every resource description while holding `R/A` of the picture.
+
+#### Two errors caught during the write, before CI
+
+1. **Active region conflated with field coverage.** At the vendor output the
+   whole output resource is active while only part of the field is present.
+   Passing one extent for both made `Expect(B6/B7, DuplicateExpansion, ...)`
+   report an R-sized active region in an O-sized resource — wrong, and wrong in
+   a direction that would have made the defect *easier* to spot than it is.
+   Split into separate parameters.
+2. **Separated stereo strided by the engine allocation at every boundary.** At
+   B7 that meant striding an output-space resource by 2328, which is
+   meaningless — and, worse, still produced a contained, legal-looking region.
+   Changed to stride by the per-eye half of *that* resource. A regression test
+   now pins `SubmitOrigin(AllocationSeparatedStereo, eye 1) == 3494`.
+
+#### Verification before push
+
+Per the standing rule. Extents were not recomputed — they come from
+`VRGeometryPolicy` and were already verified against its compiled assertions in
+the phase 0 pass. What needed independent checking was the model's own
+arithmetic:
+
+| claim | check | result |
+|---|---|---|
+| duplicate zoom X at Balanced | `Ratio{2328, 2054}`, cross-multiplied | exact, no division |
+| duplicate zoom Y at Balanced | `Ratio{2372, 2092}` | exact |
+| duplicate zoom at UltraPerformance | `2328/1164 = 2`, `2372/1186 = 2` | exactly 2 in both axes |
+| diagonal zoom | `2328/2328`, `2372/2372` | unity — the defect vanishes |
+| affine `sx` for duplicate@UltraPerf | `3494 x 2328 = 8134032 < 2^24`, `/1164 = 6988` | exactly representable in float32 |
+| affine `sy` for duplicate@UltraPerf | `3558 x 2372 = 8439576 < 2^24`, `/1186 = 7116` | exactly representable |
+| affine for the correct paths | `3494 x 1164 / 1164`, `3558 x 1186 / 1186` | exact |
+| packed eye-1 origin at B2 | `1 x 2054`, right edge `4108 <= 4656` | contained |
+| separated eye-1 origin at B2 | `1 x 2328`, right edge `4382 <= 4656` | contained |
+| packed eye-1 origin at B7 | `1 x 3494`, right edge `6988 <= 6988` | contained, exactly |
+
+Every float asserted in the test is an exactly representable float32 value: each
+product stays under 2^24 and each division is by a factor of its numerator. That
+was chosen deliberately — **a candidate transform that needed a tolerance to
+assert would not be a candidate the analyzer could be scored against.** Balanced
+and Performance are therefore asserted as rationals only, never as floats.
+
+Also confirmed by hand: `Derive` does **not** clamp a non-fitting render extent,
+it returns it and sets `RelatchRequired`. Without that, the invalid-containment
+test would have found nothing to reject and would have passed vacuously. The
+test guards against exactly that by requiring it saw at least one non-fitting
+pair.
+
+#### Exit condition · answered, pending CI
+
+> **Exit:** the finite candidate transforms compile and their golden values are
+> fixed before runtime data is seen.
+
+- **Golden values fixed before data:** yes. Every assertion is a `static_assert`,
+  so the values are frozen in the binary; no capture exists.
+- **Compile:** **not yet confirmed.** No MSVC is available on this machine, so
+  this cannot be claimed until CI reports. The phase is not complete until it
+  does.
+
+One foreseeable failure mode worth naming now rather than diagnosing later:
+`EveryStateIsContained` evaluates roughly 2,940 `Expect` calls in a single
+constant expression. That is well inside MSVC's default limit of 1,048,576
+constexpr steps on my estimate, but if CI reports a step-limit error the fix is
+to split the loop per layout, not to weaken the assertion.
+
+#### Deliberately not done
+
+- **P-1 was not acted on.** Its trigger is the `edge-contracts.json` step, not
+  this phase. The RS-off producer is untouched and uncharacterized; phase 1's
+  instruction was to characterize *rather than replace*, and characterizing it
+  belongs with the edge contract that will consume the characterization.
+- **`BindResources()` was not implemented** as a production stage. The model is
+  the pure half of it; binding to live D3D resources is not a phase 1 exit.
+- **B0, B1 and B5 have no coverage model.** Plan and camera state are not
+  colour-field coverage questions, and the auxiliaries need correspondence
+  contracts rather than coverage. Named here so their absence is not later read
+  as an oversight.
+
+#### Commit
+
+| repo | commit | content |
+|---|---|---|
+| skyrim-community-shaders (`csx318-hot-envelope-diag`) | `db9687f77` | `VRPipelineContract.h`, `vr_pipeline_contract_test.cpp`, CMake registration |
+
+Pushed 2026-08-21. CI result pending — Rik reports it. **Phase 1 stays open
+until the plugin build and `controller_tests` are green.** Phase 1A does not
+start before then, because an analyzer built against a candidate set that does
+not compile would be built against nothing.
+
+#### Cost
+
+One session. No CI time spent by me, no headset, no game launch.

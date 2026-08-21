@@ -2,7 +2,7 @@
   "experimentId": "CDO-001",
   "title": "Compositional differential oracle for Hot-Envelope",
   "opened": "2026-08-21",
-  "status": "phase-0-complete",
+  "status": "phase-1-pushed-ci-pending",
 
   "immutability": {
     "rule": "This manifest must not be edited after the first Hot-Envelope capture (protocol phase 0 step 6). Corrections are appended to amendments with a timestamp and reason.",
