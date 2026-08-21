@@ -41,8 +41,9 @@ names are given always.
 | **3** | vendor **inputs** are accepted at `>=` while **outputs** require `==`; only reachable when the contract generation is held stable | fact | stock | `[VRIntermediate] oversizedInput=` | **PENDING** |
 | **4** | one normalized bound is resolved against **two different extents** in the same function — colour against the resource, depth against the field | fact | stock | `[DynResPass]` + a follow-up | **PENDING** |
 | **4b** | our headline symptom is **one experimental arm's** symptom | correction | ours | already established | **DONE** |
+| **5** | CSX already logs geometry, but every such line is gated on `IsDeveloperMode()`, which is literally `log level <= debug` — so the only way to see one is to enable all 129 | fact | stock | `vrDiagGeometryLog` | **PENDING** |
 
-Three facts, one contradiction, one correction. None of them says what the pixels
+Four facts, one contradiction, one correction. None of them says what the pixels
 are — see "What the register cannot do" at the end.
 
 ---
@@ -305,6 +306,83 @@ STATUS: DONE - README.md section 3 corrected 2026-08-21, correction left visible
 
 ---
 
+
+---
+
+## Gem 5 — CSX already logs the geometry, behind an all-or-nothing gate
+
+**Claim.** Stock CSX logs its own geometry, including the **allocation per render
+target from the path that writes it**. Every such line is gated on
+`IsDeveloperMode()`, which is not a separate mode — it is literally
+`GetLogLevel() <= debug`. So the only way to see one line is to enable **all 129
+debug calls** in `Upscaling.cpp` at once.
+
+**Attribution.** Stock CSX.
+
+**Evidence.**
+
+```cpp
+// State.cpp:1428
+bool State::IsDeveloperMode() { return GetLogLevel() <= spdlog::level::debug; }
+
+// Upscaling.cpp:834
+bool ShouldEmitUpscalingDiagLogs() { return state && state->IsDeveloperMode(); }
+```
+
+The two lines that carry geometry:
+
+```cpp
+// State.cpp:1436  ALLOCATION, per target, from AdjustVRRenderScaleRenderTargetProperties
+logger::debug("[Upscaling] Adjusted {} render target properties to {}x{} for VR render scale.", ...)
+
+// Upscaling.cpp  behind ShouldEmitUpscalingDiagLogs(), deduped on change
+logger::debug("[VRRenderScale] Runtime plan: owner={} method={} quality={} display={}x{} render={}x{} final={}x{}", ...)
+```
+
+**Why this is a gem rather than a note.** The first one is an **independent read
+of the allocation**. Our instrument reports `A` from the resolution plan; this
+reports it from the code that actually rewrites what Skyrim allocates. Two
+different sources for the same quantity, so a disagreement is a finding neither
+could produce alone — and until now we had no second source for `A` at all.
+
+**Independence, stated precisely**, because it is easy to overclaim:
+
+| line | source | is it independent? |
+|---|---|---|
+| `Adjusted {target} … to {}x{}` | the allocation-writing path | **yes** — different code, different origin |
+| `[VRRenderScale] Runtime plan:` | the same `RuntimeResolutionPlan` we read | **no** — it cross-checks our logging, not the geometry |
+| `Submit-stage replacement could not copy source: …` | live `D3D11_TEXTURE2D_DESC` | **yes**, and already `logger::warn` — visible at the default level |
+| `scene submit bounds mismatch. actual={}x{} expected={}x{}` | the actually-submitted texture | **yes**, already `logger::warn` |
+
+The last two need no flag and no build: they are in everyone's log already,
+including logs posted by other people.
+
+**The parameter.** `vrDiagGeometryLog`, default `0`. It promotes exactly those
+two debug lines to `info`; with the flag off, the stock path is byte-for-byte
+unchanged. This exists so the independent read costs what two lines cost rather
+than what the whole debug channel costs — the blunt alternative would be a
+perturbation we would then have to defend at protocol phase 4.
+
+**Test.** Set `vrDiagGeometryLog: 1` for all three sessions, leaving
+`"Log Level": 2`.
+
+| observation | means |
+|---|---|
+| `Adjusted kMAIN … to 4656x2372` under the envelope, matching our `plan A=` | the two sources agree; `A` is confirmed from two directions |
+| the two disagree | **a finding** — the plan and the allocation path do not describe the same target |
+| no `Adjusted …` lines under the envelope | the render-scale target rewrite is not happening at all, which would be a different and larger problem |
+
+**What would falsify the interesting half.** If `Adjusted …` only ever prints at
+boot and never after a quality change, it confirms `A` once and cannot corroborate
+anything about the envelope holding — still useful, but a weaker claim than
+"independent confirmation during the run".
+
+### Result
+
+```
+STATUS: PENDING
+build: 3b46810cf
+```
 ## What the register cannot do
 
 None of these says **what the pixels are**. Every entry is about extents,
