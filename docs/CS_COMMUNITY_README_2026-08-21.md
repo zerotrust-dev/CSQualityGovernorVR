@@ -61,6 +61,7 @@ one-pixel sizing asymmetry between the two VR paths — all in
 | `docs/CSX_HOT_ENVELOPE_POC.md` | the original proposal to ParticleTroned, its measurements, and its results including the failures |
 | `docs/PLAN_GEOMETRY_TYPE_SPLIT.md` | **on hold since 2026-08-21.** How the three geometries were derived, and why the previous six attempts failed. Its finished phases feed the protocol above |
 | `docs/PLAN_COMPOSITIONAL_DIFFERENTIAL_ORACLE.md` | objective three-flow protocol: constrain and justify the Hot-Envelope contracts, localize the first divergent dependency frontier, then prove causality by controlled intervention |
+| **`docs/CODE_GEMS.md`** | **The register.** Facts established by reading CSX that no shipped configuration can see, each with the measurement that will test it and a slot for the result |
 | **`docs/FINDING_DYNAMIC_RESOLUTION_PASS_REPLACEMENT.md`** | **Newest.** A stock CSX copy box that assumes one stereo layout - invisible in every shipped configuration because the two layouts coincide there. Source-derived, test built, not yet confirmed |
 | `docs/CDO_EXECUTION_LOG.md` | the running record of the current strategy: what each phase did, what it cost, what it found, and two parked items |
 | `docs/PHASE_1A_SITE_TABLE.md` | every consumer of the render extent and the allocation, enumerated by the compiler and classified: 10 suspects, 43 sites proven off the envelope path |
