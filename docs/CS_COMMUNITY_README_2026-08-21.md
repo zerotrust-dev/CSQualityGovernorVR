@@ -30,9 +30,11 @@ during play, and only going above it needs a real reallocation.
 changes, **1 relatch per session against 171**, and the GPU saving survives:
 P95 GPU of 12.50 / 11.41 / 10.11 / 6.26 ms down the ladder.
 
-**What is wrong.** The *image* is wrong below the envelope quality — the world
-looks too close and flattened. Six attempts to fix it have failed. The defect is
-monocular, the submitted texture is whole, and the eye origin is not the cause.
+**What is wrong.** The *image* is wrong below the envelope quality. Six attempts
+to fix it have failed. The submitted texture is whole and the OpenVR bounds are
+correct. **Corrected 2026-08-21:** we had described the symptom as "too close and
+flattened" without stating that this is the symptom of **one experimental eye-origin
+arm**; the other arm produces cross-eyes instead. See §3.
 
 **What we are doing about it now.** We think CSX has three geometric concepts
 and names that distinguish only two, because in every shipped configuration two
@@ -134,9 +136,28 @@ relatches and can wait for a loading screen.
 12.50 / 11.41 / 10.11 / 6.26 ms across the ladder, at least as good as the
 boot-latched equivalent.
 
-**The image is wrong.** Below the envelope quality the world looks too close and
-flattened into layers. Six attempts to fix it have failed, each locally correct
-and globally wrong.
+**The image is wrong**, and on 2026-08-21 we found that we had been describing it
+imprecisely. Corrected here rather than quietly edited, because the imprecision
+was in the direction of making the problem sound simpler than it is.
+
+There is a setting, `vrHotEnvelopeEyeOrigin`, that chooses where eye 1 begins
+inside the allocation. It has **no neutral value** — only "packed" (directly after
+eye 0's rendered region), "allocation half" (the physical half boundary), or a
+manual pixel. It defaults to the allocation half, so every session has one of the
+two conventions active. The two fail **differently**:
+
+| eye-origin arm | symptom below the envelope quality |
+|---|---|
+| allocation half (**the default**, and what we have been reporting) | the world looks too close and flattened into layers |
+| packed | cross-eyed |
+
+So the accurate statement is *"under the allocation-half origin, the world looks
+too close and flattened"* — not *"Hot-Envelope looks too close and flattened."*
+Our earlier wording collapsed those, and collapsed "both arms failed" into a
+single outcome when in fact they failed in two different ways. That difference is
+evidence, and we lost it for three days.
+
+Six attempts to fix it have failed, each locally correct and globally wrong.
 
 What we have established, mostly by ruling things out:
 
@@ -145,9 +166,18 @@ What we have established, mostly by ruling things out:
 - the defect is **monocular** — with either eye closed the image is equally
   wrong, which rules out every stereo-relationship explanation we had;
 - it is correct at exactly one preset: the envelope quality, where allocation and
-  render extent are the same number;
-- the eye origin is **not** the cause. Both self-consistent conventions were
-  built and both failed.
+  render extent are the same number — which is also the one preset where the two
+  eye-origin arms resolve to the same pixel, so no run so far distinguishes them;
+- the eye origin is **not settled**. We previously wrote that it was "not the
+  cause" because both conventions were built and both failed. That is weaker than
+  it sounded: they failed differently, neither was tested against anything but a
+  visual judgement, and the code that computes them resolves the same normalized
+  OpenVR bound against two different extents — a physical resource width in one
+  case, a logical field width in the other. Those agree only when the rendered
+  field fills the resource, which is true in both shipped flows and false here.
+
+The last point is documented in full in
+`docs/FINDING_DYNAMIC_RESOLUTION_PASS_REPLACEMENT.md` §12.
 
 ## 4. Why we think it is a naming problem
 
