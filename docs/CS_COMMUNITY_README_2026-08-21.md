@@ -57,8 +57,11 @@ one-pixel sizing asymmetry between the two VR paths — all in
 | **`REPOS.md`** | the three repositories, which branch is which, how to clone and build, and the preset-numbering trap |
 | **`docs/EXPLAINER_THREE_FLOWS_AND_RESEARCH_STRATEGY.md`** | **Non-specialist introduction.** VR upscaling, the three flows, the image defect, the objective research strategy, and why the work matters |
 | `docs/CSX_HOT_ENVELOPE_POC.md` | the original proposal to ParticleTroned, its measurements, and its results including the failures |
-| `docs/PLAN_GEOMETRY_TYPE_SPLIT.md` | the plan we are executing, and why the previous six attempts failed |
+| `docs/PLAN_GEOMETRY_TYPE_SPLIT.md` | **on hold since 2026-08-21.** How the three geometries were derived, and why the previous six attempts failed. Its finished phases feed the protocol above |
 | `docs/PLAN_COMPOSITIONAL_DIFFERENTIAL_ORACLE.md` | objective three-flow protocol: constrain and justify the Hot-Envelope contracts, localize the first divergent dependency frontier, then prove causality by controlled intervention |
+| **`docs/FINDING_DYNAMIC_RESOLUTION_PASS_REPLACEMENT.md`** | **Newest.** A stock CSX copy box that assumes one stereo layout - invisible in every shipped configuration because the two layouts coincide there. Source-derived, test built, not yet confirmed |
+| `docs/CDO_EXECUTION_LOG.md` | the running record of the current strategy: what each phase did, what it cost, what it found, and two parked items |
+| `docs/PHASE_1A_SITE_TABLE.md` | every consumer of the render extent and the allocation, enumerated by the compiler and classified: 10 suspects, 43 sites proven off the envelope path |
 | `docs/NOTE_MENU_EYE_PATH_SPLIT.md` | the menu crossed-eye defect, in full |
 | `docs/CS_PLUGIN_API.md` | how an external plugin drives CSX's upscaler |
 | `docs/MEASUREMENT_METHOD.md` | how we measure, and the rules we adopted after getting it wrong |
@@ -167,16 +170,29 @@ every configuration that ships. Our feature is the first thing to make it
 matter — which is also why this may turn out to be a change only the author can
 sensibly make, and we would regard that as a legitimate outcome.
 
-**What we are doing about it** (`docs/PLAN_GEOMETRY_TYPE_SPLIT.md`):
+**What we are doing about it** (`docs/PLAN_COMPOSITIONAL_DIFFERENTIAL_ORACLE.md`,
+which replaced `PLAN_GEOMETRY_TYPE_SPLIT.md` as the active strategy on
+2026-08-21 after a meeting with members of this community):
 
 1. one pure, dependency-free geometry planner, derived from source and verified
    by compile-time tests across all three flows, the full 7x7 boot x active
-   matrix, and seven display sizes;
+   matrix, and seven display sizes. **Done.**
 2. distinct types for the three geometries, so the *compiler* enumerates every
-   consumer — including code no play session ever executes;
-3. a semantic pass over that exhaustive list.
+   consumer, including code no play session ever executes. **Done** - 116 sites
+   across 32 consumers, classified in `docs/PHASE_1A_SITE_TABLE.md`.
+3. then, instead of a semantic pass over that list, **record the coordinate
+   transform at every pipeline boundary and find the earliest edge whose
+   measured mapping contradicts a contract written down beforehand** - and only
+   then change one variable, in a counterbalanced A/B, to test causality.
 
-If that finds no wrong consumer, we will have established with much better
+Step 3 is the change of direction. A semantic pass over a list of suspects would
+have been a seventh guess, better informed than the previous six but still a
+guess. The protocol replaces that with a finite pipeline bisect whose failure
+modes are named outcomes: `INCONCLUSIVE`, `DIAGNOSTIC_INTERFERENCE`,
+`MISSING_BOUNDARY`, `OPAQUE_TEMPORAL_STATE`. "We do not know" is a reportable
+result rather than a prompt to try something else.
+
+If it finds no wrong consumer, we will have established with much better
 coverage than any play session that the defect lies elsewhere — in resource
 lifecycle, vendor state, or stereo submission. We would consider that worth the
 same effort as a fix, and we would say so.

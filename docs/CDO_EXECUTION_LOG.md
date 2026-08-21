@@ -422,3 +422,37 @@ not compile would be built against nothing.
 #### Cost
 
 One session. No CI time spent by me, no headset, no game launch.
+
+---
+
+### Correction · 2026-08-21 · I corrupted `D:\CS\README.md` and caught it
+
+Recorded rather than quietly fixed, per the project's own rule.
+
+**What happened.** Editing the community package README, I used PowerShell
+`Get-Content -Raw` to read it and `[System.IO.File]::WriteAllText` to write it
+back. In Windows PowerShell 5.1 `Get-Content` decodes a UTF-8 file *without a
+BOM* as ANSI, while `WriteAllText` encodes as UTF-8. The round trip therefore
+re-encoded every non-ASCII character. **All 21 em-dashes became mojibake** —
+27 corrupted byte sequences, zero clean ones — in a document written for people
+outside this project to read.
+
+**How it was caught.** The corruption was visible in the console output of my
+own verification command. The value of the standing rule is not that it prevents
+mistakes; it is that the check happened at all.
+
+**How it was fixed.** Rebuilt from the pristine copy taken at the start of the
+session, re-applying the edits with UTF-8-safe tools, then verified at the byte
+level: `0` occurrences of `C3 83`, `20` of `E2 80 94`. Every `.md` file in
+`D:\CS` was then scanned for the same signature; none was affected.
+
+**The general rule this adds.** *The language's default encoding is part of the
+tool's semantics, and defaults differ between reading and writing in the same
+shell.* This is the same class of error as the earlier PowerShell `[int]`
+rounding where C++ truncates, which produced five values one pixel high and
+briefly looked like a discovery. Both times the "more convenient" tool silently
+changed the data.
+
+**Practice going forward:** edit UTF-8 documents with byte-preserving tools, and
+verify at the byte level rather than by eye — a corrupted em-dash renders as
+plausible-looking noise and is easy to skim past.
